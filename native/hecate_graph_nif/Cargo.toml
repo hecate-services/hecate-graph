@@ -1,0 +1,18 @@
+[package]
+name = "hecate_graph_nif"
+version = "0.1.0"
+edition = "2021"
+description = "CozoDB NIF for hecate-graph: embeddable relational-graph-vector database"
+
+[lib]
+name = "hecate_graph_nif"
+crate-type = ["cdylib"]
+
+[dependencies]
+rustler = "0.34"
+cozo = { version = "0.7", features = ["rocks"] }
+serde_json = "1.0"
+
+[profile.release]
+lto = true
+opt-level = 3

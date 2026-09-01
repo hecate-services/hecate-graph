@@ -1,0 +1,8 @@
+## Node identity + runtime flags for hecate_graph.
+-name ${HECATE_NODE_NAME}@${HECATE_NODE_HOST}
+-setcookie ${HECATE_COOKIE}
+
++K true
++A 8
+
+-env ERL_CRASH_DUMP /var/lib/hecate-graph/erl_crash.dump

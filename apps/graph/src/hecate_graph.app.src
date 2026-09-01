@@ -1,0 +1,23 @@
+{application, hecate_graph, [
+    {description, "Embeddable relational-graph database (CozoDB) as a mesh service"},
+    {vsn, "0.1.0"},
+    {registered, [hecate_graph_sup]},
+    {mod, {hecate_graph_app, []}},
+    {applications, [
+        kernel,
+        stdlib,
+        crypto,
+        hecate_om
+    ]},
+    {env, [
+        {data_dir, "/var/lib/hecate-graph"},
+        %% Topic for entity discovery facts (published when learn_link
+        %% creates an entity that didn't exist).
+        {entity_learned_topic, <<"entity_learned">>},
+        %% Topic for link discovery facts.
+        {link_learned_topic, <<"link_learned">>}
+    ]},
+    {modules, []},
+    {licenses, ["Apache-2.0"]},
+    {links, [{"GitHub", "https://github.com/hecate-services/hecate-graph"}]}
+]}.

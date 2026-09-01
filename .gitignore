@@ -1,0 +1,19 @@
+_build/
+_checkouts/
+.rebar3/
+rebar.lock
+erl_crash.dump
+rebar3.crashdump
+
+# Rust / Cargo (NIF crate under native/)
+native/**/target/
+native/**/Cargo.lock
+
+# NIF artefacts (built into priv/, kept out of git)
+priv/lib/*.so
+priv/lib/*.dylib
+priv/lib/*.dll
+
+.idea/
+*.swp
+.DS_Store

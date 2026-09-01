@@ -1,0 +1,16 @@
+%% Substituted by relx at build; ${VAR} resolves from the environment at boot.
+[
+    {hecate_om, [
+        {service_cert_path, "/etc/hecate/secrets/service-cert.pem"},
+        {station_socket,    "/run/macula/station.sock"},
+        {health_port,       ${HECATE_HEALTH_PORT}},
+        {capability_topic,  <<"_mesh.cap.">>},
+        {realm,             <<"${HECATE_REALM}">>}
+    ]},
+
+    {hecate_graph, [
+        {data_dir, "/var/lib/hecate-graph"}
+    ]},
+
+    {kernel, [{logger_level, info}]}
+].

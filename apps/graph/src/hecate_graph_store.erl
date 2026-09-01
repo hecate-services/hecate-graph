@@ -1,0 +1,159 @@
+%%% @doc CozoDB store wrapper — opens the database, initialises the schema,
+%%% and provides the query API used by learn_link / resolve_link / resolve_entity.
+%%%
+%%% The CozoDB resource handle is held in this gen_server's state. All
+%%% queries go through run/2 or run_script/2, which call the NIF.
+%%%
+%%% Schema (two relations):
+%%%
+%%%   entities — one row per known entity (implicitly created by learn_link)
+%%%     id         String  (primary key, e.g. "did:macula:abc")
+%%%     attributes Json    (flexible metadata bag)
+%%%     first_seen Int     (epoch ms when first learned)
+%%%     source     String  (which instance learned it)
+%%%
+%%%   links — one row per association (subject → predicate → object)
+%%%     subject    String  (entity id)
+%%%     predicate  String  (relationship type, e.g. "authored")
+%%%     object     String  (entity id)
+%%%     confidence Float   (0.0–1.0)
+%%%     source     String  (which instance learned it)
+%%%     learned_at Int     (epoch ms)
+%%%     link_id    String  (sha256(subject|predicate|object|learned_at), primary key)
+-module(hecate_graph_store).
+-behaviour(gen_server).
+
+-export([start_link/0, is_open/0, run/2, run_script/1]).
+-export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
+
+-define(SCHEMA, "
+    :create entities {
+        id: String,
+        attributes: Json default {},
+        first_seen: Int,
+        source: String
+    }
+
+    :create links {
+        link_id: String,
+        subject: String,
+        predicate: String,
+        object: String,
+        confidence: Float default 1.0,
+        source: String,
+        learned_at: Int
+    }
+
+    % Index for fast entity lookup by id
+    :create idx_entity {id: String}
+    ?[id, attributes, first_seen, source] := *entities{id, attributes, first_seen, source}
+
+    % Index for fast link lookup by subject
+    :create idx_links_subject {subject: String}
+    ?[link_id, subject, predicate, object, confidence, source, learned_at] :=
+        *links{link_id, subject, predicate, object, confidence, source, learned_at}
+
+    % Index for fast link lookup by object (reverse traversal)
+    :create idx_links_object {object: String}
+    ?[link_id, subject, predicate, object, confidence, source, learned_at] :=
+        *links{link_id, subject, predicate, object, confidence, source, learned_at}
+").
+
+-record(state, {
+    resource :: reference() | undefined,
+    data_dir :: file:filename()
+}).
+
+%%====================================================================
+%% API
+%%====================================================================
+
+-spec start_link() -> {ok, pid()} | {error, term()}.
+start_link() ->
+    gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
+
+-spec is_open() -> boolean().
+is_open() ->
+    case whereis(?MODULE) of
+        undefined -> false;
+        _Pid -> gen_server:call(?MODULE, is_open)
+    end.
+
+-spec run(binary(), map()) -> {ok, map()} | {error, term()}.
+run(Query, Params) ->
+    gen_server:call(?MODULE, {run, Query, Params}, 30000).
+
+-spec run_script(binary()) -> {ok, map()} | {error, term()}.
+run_script(Script) ->
+    gen_server:call(?MODULE, {run_script, Script}, 30000).
+
+%%====================================================================
+%% gen_server callbacks
+%%====================================================================
+
+init([]) ->
+    DataDir = application:get_env(hecate_graph, data_dir, "/var/lib/hecate-graph"),
+    ok = filelib:ensure_dir(filename:join(DataDir, "dummy")),
+
+    case hecate_graph_nif:open(DataDir) of
+        {ok, Resource} ->
+            case init_schema(Resource) of
+                ok ->
+                    logger:info("hecate_graph_store opened CozoDB at ~s", [DataDir]),
+                    {ok, #state{resource = Resource, data_dir = DataDir}};
+                {error, Reason} = Error ->
+                    logger:error("hecate_graph_store schema init failed: ~p", [Reason]),
+                    {stop, Error}
+            end;
+        {error, nif_not_loaded} = Error ->
+            logger:error("hecate_graph_store: CozoDB NIF not loaded — "
+                         "graph service cannot function without it"),
+            {stop, Error};
+        {error, Reason} = Error ->
+            logger:error("hecate_graph_store: CozoDB open failed: ~p", [Reason]),
+            {stop, Error}
+    end.
+
+handle_call(is_open, _From, #state{resource = R} = State) ->
+    {reply, R =/= undefined, State};
+
+handle_call({run, Query, Params}, _From, #state{resource = R} = State) ->
+    Result = hecate_graph_nif:run_query(R, Query, Params),
+    {reply, Result, State};
+
+handle_call({run_script, Script}, _From, #state{resource = R} = State) ->
+    Result = hecate_graph_nif:run_script(R, Script),
+    {reply, Result, State};
+
+handle_call(_Request, _From, State) ->
+    {reply, {error, unknown_request}, State}.
+
+handle_cast(_Msg, State) ->
+    {noreply, State}.
+
+handle_info(_Info, State) ->
+    {noreply, State}.
+
+terminate(_Reason, #state{resource = R}) when R =/= undefined ->
+    catch hecate_graph_nif:close(R),
+    ok;
+terminate(_Reason, _State) ->
+    ok.
+
+%%====================================================================
+%% Internal
+%%====================================================================
+
+init_schema(Resource) ->
+    case hecate_graph_nif:run_script(Resource, ?SCHEMA) of
+        {ok, _} -> ok;
+        {error, Reason} ->
+            handle_schema_error(Reason)
+    end.
+
+handle_schema_error(Reason) ->
+    ReasonStr = iolist_to_binary(io_lib:format("~p", [Reason])),
+    case binary:match(ReasonStr, <<"already exists">>) of
+        nomatch -> {error, Reason};
+        _ -> ok
+    end.
