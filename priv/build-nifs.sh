@@ -8,7 +8,17 @@ set -eu
 
 BUILD_DIR="${1:-.}"
 NIF_DIR="${BUILD_DIR:-.}/native/hecate_graph_nif"
-PRIV_DIR="${BUILD_DIR:-.}/priv"
+# apps/graph/priv, NOT the repo-root priv/ this script itself lives in.
+# relx assembles a release's priv/ for an app from THAT APP'S OWN priv
+# directory (apps/graph/priv here) -- the repo-root priv/ is not part of
+# any OTP application and nothing copies it into the release. Confirmed
+# live: the NIF built and this script reported it "installed" to the
+# repo-root priv/, but the shipped release's lib/hecate_graph-0.1.0/ had
+# no priv/ at all, so code:priv_dir(hecate_graph) at runtime resolved to
+# a location the .so was never copied into -- {error, nif_not_loaded}, a
+# fatal error hecate_graph_store treats as fatal by design, crash-looping
+# on msi00 after what looked like a clean deploy.
+PRIV_DIR="${BUILD_DIR:-.}/apps/graph/priv"
 
 if ! command -v cargo >/dev/null 2>&1; then
     echo "[hecate-graph] Rust toolchain not found — CozoDB NIF will not be built." >&2
