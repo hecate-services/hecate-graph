@@ -1,0 +1,51 @@
+# Build the OCI image for hecate-graph and push to ghcr.io.
+# Triggered on push to main and on tag pushes.
+#
+# Pushes BOTH :latest and the semver tag. msi00's Quadlet unit tracks
+# :latest under `podman auto-update` for zero-touch deploys, and the
+# semver tags stay published so a bad release can be pinned back to a
+# known one.
+
+name: build-and-push
+
+on:
+  push:
+    branches: [main]
+    tags:     ['v*']
+  workflow_dispatch:
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set tag
+        id: tag
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            echo "tag=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=latest" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Containerfile
+          push: true
+          tags: |
+            ghcr.io/hecate-services/hecate-graph:latest
+            ghcr.io/hecate-services/hecate-graph:${{ steps.tag.outputs.tag }}

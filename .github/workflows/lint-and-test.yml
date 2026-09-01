@@ -1,0 +1,42 @@
+# Structural lint and the Common Test suite.
+#
+# hecate_om pulls in rocksdb (via barrel_docdb) and khepri/ra transitively,
+# UNCONDITIONALLY, on top of CozoDB's own RocksDB backend -- cmake, a C++
+# toolchain, and the codec dev libs are needed: rocksdb builds its NIF from
+# source via CMake, and the base erlang image ships none of it. rocksdb's
+# CMakeLists auto-detects Snappy/lz4/zstd/bz2 via find_package() and, if
+# one is missing, silently DISABLES it rather than failing the build --
+# install all four, not just whichever this repo happens to exercise
+# first. Same reasoning as hecate-om's/hecate-rag's own workflows.
+#
+# libclang-dev: cozo's storage-rocksdb feature pulls in cozorocks, which
+# uses bindgen at build time to generate Rust FFI bindings against
+# RocksDB's C++ headers -- bindgen needs libclang.so to do that. Confirmed
+# locally while building this fix: a build without it fails with "Unable
+# to find libclang" before this repo's own NIF code ever compiles. No
+# sibling service needs this since none of them use cozo.
+#
+# No `rebar3 eunit` step -- unlike hecate-om, this repo has no eunit
+# suite, only the hecate_graph_SUITE common_test suite.
+
+name: lint-and-test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    container:
+      # MUST MATCH the Containerfile's builder stage OTP version.
+      image: erlang:28
+    steps:
+      - uses: actions/checkout@v4
+      - run: apt-get update && apt-get install -y --no-install-recommends cmake build-essential libsnappy-dev liblz4-dev libzstd-dev libbz2-dev libclang-dev
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - run: rebar3 lint
+      - run: rebar3 ct
