@@ -223,7 +223,14 @@ Real open questions before this is buildable, not just "nice future work":
       outright, not recorded at a lower confidence — the table above has
       no row for it because Phase 1 can't reach that state on the RPC
       side. hecate-graph 0.3.0.
-- [ ] **Phase 3** — `narrate_graph` as a separate, pluggable-backend desk
+- [x] **Phase 3** — `narrate_entity`/`narrate_link` as separate,
+      pluggable-backend desks. DONE 2026-09-02: default backend calls
+      `hecate-llm.chat` over the mesh instead of hecate-graph carrying
+      its own LLM API key/HTTP client — hecate-llm deployed for the
+      first time ever as part of landing this (first real consumer).
+      NVIDIA free tier is the actual default (cost-driven; Melious
+      priced out at this stage but stays wired into hecate-llm's own
+      provider list). hecate-graph 0.4.0.
 - [ ] **Phase 4** — Citizen lookup via delegation-facts traversal (depends
       on the citizen-identity plan)
 - [ ] **Phase 5** — Reputation via CozoDB's built-in PageRank (exploratory;
