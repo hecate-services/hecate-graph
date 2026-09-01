@@ -10,7 +10,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 rustler = "0.34"
-cozo = { version = "0.7", features = ["rocks"] }
+cozo = { version = "0.7", features = ["storage-rocksdb"] }
 serde_json = "1.0"
 
 [profile.release]

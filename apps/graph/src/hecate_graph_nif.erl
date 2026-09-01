@@ -24,10 +24,20 @@
 -define(NIF_LIB, "hecate_graph_nif").
 
 on_load() ->
-    case erlang:load_nif(?NIF_LIB, 0) of
+    case erlang:load_nif(nif_path(), 0) of
         ok -> ok;
         {error, {load_failed, _}} -> ok;
         {error, _} -> ok
+    end.
+
+%% priv/build-nifs.sh installs the compiled .so into priv/, not ebin/ (where
+%% the module's own .beam lives) -- erlang:load_nif/2 resolves a bare
+%% filename relative to ebin/, so it was never found there. This mirrors
+%% the reckon_db_hash_nif.erl convention elsewhere in this codebase family.
+nif_path() ->
+    case code:priv_dir(hecate_graph) of
+        {error, bad_name} -> filename:join("priv", ?NIF_LIB);
+        PrivDir -> filename:join(PrivDir, ?NIF_LIB)
     end.
 
 -spec is_loaded() -> boolean().

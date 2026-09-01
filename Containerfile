@@ -14,10 +14,24 @@
 #----------------------------------------------------------------------
 # Stage 1 — builder: Erlang + Rust + rebar3 + deps + release
 #----------------------------------------------------------------------
-FROM docker.io/erlang:27-alpine AS builder
+FROM docker.io/erlang:28-alpine AS builder
 WORKDIR /build
 
-RUN apk add --no-cache git curl bash build-base cmake perl linux-headers
+# openssl-dev/zstd-dev/snappy-dev/lz4-dev: hecate_om pulls in rocksdb (via
+# barrel_docdb) and khepri/ra transitively, UNCONDITIONALLY, on top of
+# CozoDB's own RocksDB backend — confirmed as a real, previously-shipped
+# incident on a sibling hecate-services repo with no store of its own
+# (hecate-om's own service template, priv/templates/hecate_service/Containerfile).
+#
+# clang-dev: `cozo`'s `storage-rocksdb` feature pulls in `cozorocks`, which
+# uses `bindgen` at build time to generate Rust FFI bindings against
+# RocksDB's C++ headers. `bindgen` needs `libclang.so` to do that — without
+# it the build fails in a dependency's build.rs before this repo's own code
+# ever compiles, with "Unable to find libclang" (verified directly: a local
+# `cargo check` against this exact Cargo.toml failed exactly this way on a
+# machine with no `clang`/`clang-dev` installed).
+RUN apk add --no-cache git curl bash build-base cmake perl linux-headers \
+        openssl-dev zstd-dev snappy-dev lz4-dev clang-dev
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
         | sh -s -- -y --default-toolchain stable --profile minimal
 ENV PATH="/root/.cargo/bin:${PATH}"
@@ -44,7 +58,19 @@ RUN rebar3 as prod release
 # Stage 2 — runtime: bare Alpine + the assembled release
 #----------------------------------------------------------------------
 FROM docker.io/alpine:3.22
-RUN apk add --no-cache ncurses-libs libstdc++ libgcc openssl ca-certificates curl
+# LINKS THE PACKAGE TO THE REPOSITORY. On registries that read it, ghcr among
+# them, a package without this label is an orphan: it does not appear on the
+# repository page and does not inherit its visibility. Matches the pattern
+# every hecate_om-scaffolded sibling carries.
+LABEL org.opencontainers.image.source="https://github.com/hecate-services/hecate-graph"
+# zstd-libs/snappy/lz4-libs: the RUNTIME shared libraries for rocksdb's
+# compression backends, compiled against in the builder stage above via
+# their -dev packages. Missing here crashes the release outright on boot --
+# rocksdb's on_load NIF init fails with "Failed to load NIF library: Error
+# loading shared library liblz4.so.1: No such file or directory" -- a
+# previously-shipped incident on a sibling repo, see the builder stage.
+RUN apk add --no-cache ncurses-libs libstdc++ libgcc openssl ca-certificates curl \
+        zstd-libs snappy lz4-libs
 WORKDIR /app
 COPY --from=builder /build/_build/prod/rel/hecate_graph ./
 RUN mkdir -p /var/lib/hecate-graph

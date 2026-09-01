@@ -26,16 +26,31 @@
 -export([start_link/0, is_open/0, run/2, run_script/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
+%% `id' / `link_id' are the sole KEY columns (before `=>'); every other
+%% column is a VALUE column that `:put'/`:insert' can write and `:update'
+%% can revise without touching the key. Without the `=>' split, CozoDB
+%% treats every listed column as part of the key -- `:put'-ing an existing
+%% id with different attributes would silently insert a SECOND row instead
+%% of overwriting the first, which breaks both learn_link's upsert
+%% semantics and the atomic `:insert'-fails-if-exists check ensure_entity/4
+%% relies on to detect "was this entity already known" in one round trip.
+%%
+%% Real secondary indexes via `::index create' (`:create idx {...}' creates
+%% an unrelated, never-populated base relation -- it is not how CozoDB
+%% indexes anything). `entities' needs none: `id' is already its primary
+%% key, so a point lookup by id is already O(1) via the key itself.
 -define(SCHEMA, "
     :create entities {
-        id: String,
+        id: String
+        =>
         attributes: Json default {},
         first_seen: Int,
         source: String
     }
 
     :create links {
-        link_id: String,
+        link_id: String
+        =>
         subject: String,
         predicate: String,
         object: String,
@@ -44,19 +59,8 @@
         learned_at: Int
     }
 
-    % Index for fast entity lookup by id
-    :create idx_entity {id: String}
-    ?[id, attributes, first_seen, source] := *entities{id, attributes, first_seen, source}
-
-    % Index for fast link lookup by subject
-    :create idx_links_subject {subject: String}
-    ?[link_id, subject, predicate, object, confidence, source, learned_at] :=
-        *links{link_id, subject, predicate, object, confidence, source, learned_at}
-
-    % Index for fast link lookup by object (reverse traversal)
-    :create idx_links_object {object: String}
-    ?[link_id, subject, predicate, object, confidence, source, learned_at] :=
-        *links{link_id, subject, predicate, object, confidence, source, learned_at}
+    ::index create links:idx_links_subject {subject}
+    ::index create links:idx_links_object {object}
 ").
 
 -record(state, {
@@ -94,25 +98,24 @@ run_script(Script) ->
 init([]) ->
     DataDir = application:get_env(hecate_graph, data_dir, "/var/lib/hecate-graph"),
     ok = filelib:ensure_dir(filename:join(DataDir, "dummy")),
+    open_store(hecate_graph_nif:open(DataDir), DataDir).
 
-    case hecate_graph_nif:open(DataDir) of
-        {ok, Resource} ->
-            case init_schema(Resource) of
-                ok ->
-                    logger:info("hecate_graph_store opened CozoDB at ~s", [DataDir]),
-                    {ok, #state{resource = Resource, data_dir = DataDir}};
-                {error, Reason} = Error ->
-                    logger:error("hecate_graph_store schema init failed: ~p", [Reason]),
-                    {stop, Error}
-            end;
-        {error, nif_not_loaded} = Error ->
-            logger:error("hecate_graph_store: CozoDB NIF not loaded — "
-                         "graph service cannot function without it"),
-            {stop, Error};
-        {error, Reason} = Error ->
-            logger:error("hecate_graph_store: CozoDB open failed: ~p", [Reason]),
-            {stop, Error}
-    end.
+open_store({ok, Resource}, DataDir) ->
+    init_with_schema(init_schema(Resource), Resource, DataDir);
+open_store({error, nif_not_loaded} = Error, _DataDir) ->
+    logger:error("hecate_graph_store: CozoDB NIF not loaded — "
+                 "graph service cannot function without it"),
+    {stop, Error};
+open_store({error, Reason} = Error, _DataDir) ->
+    logger:error("hecate_graph_store: CozoDB open failed: ~p", [Reason]),
+    {stop, Error}.
+
+init_with_schema(ok, Resource, DataDir) ->
+    logger:info("hecate_graph_store opened CozoDB at ~s", [DataDir]),
+    {ok, #state{resource = Resource, data_dir = DataDir}};
+init_with_schema({error, Reason} = Error, _Resource, _DataDir) ->
+    logger:error("hecate_graph_store schema init failed: ~p", [Reason]),
+    {stop, Error}.
 
 handle_call(is_open, _From, #state{resource = R} = State) ->
     {reply, R =/= undefined, State};

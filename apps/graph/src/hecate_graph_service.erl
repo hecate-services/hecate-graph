@@ -39,9 +39,15 @@ health() ->
     end.
 
 capabilities() ->
-    [#{name => <<"hecate_graph.resolve_link">>,  version => 1},
-     #{name => <<"hecate_graph.resolve_entity">>, version => 1},
-     #{name => <<"hecate_graph.learn_link">>,     version => 1}].
+    [#{name    => <<"hecate_graph.resolve_link">>,
+       version => 1,
+       handler => {resolve_link, []}},
+     #{name    => <<"hecate_graph.resolve_entity">>,
+       version => 1,
+       handler => {resolve_entity, []}},
+     #{name    => <<"hecate_graph.learn_link">>,
+       version => 1,
+       handler => {learn_link, []}}].
 
 identity_spec() ->
     #{scope     => <<"graph">>,

@@ -3,26 +3,53 @@
 %%% Supports:
 %%%   - Direct links: subject → object (all predicates)
 %%%   - Filtered by predicate: subject --predicate--> object
-%%%   - N-hop traversal: subject → ... → object (recursive Datalog)
+%%%   - N-hop traversal: subject → ... → object (recursive Datalog),
+%%%     honoring direction the same way direct lookups do
 %%%   - Reverse: what links TO this entity?
 %%%
-%%% Called via mesh_call(hecate_graph.resolve_link, #{subject, ...}).
+%%% Registered as this service's `hecate_graph.resolve_link` mesh
+%%% procedure via `hecate_om_capabilities` (see
+%%% hecate_graph_service:capabilities/0).
 -module(resolve_link).
 
+-behaviour(macula_response).
+
+-export([init/1, handle_request/2]).
 -export([resolve/1]).
 
--spec resolve(map()) -> {ok, [map()]} | {error, term()}.
-resolve(#{<<"subject">> := Subject} = Params) ->
-    Predicate = maps:get(<<"predicate">>, Params, undefined),
-    Depth = maps:get(<<"depth">>, Params, 1),
-    Direction = maps:get(<<"direction">>, Params, <<"out">>),
+%%====================================================================
+%% macula_response
+%%====================================================================
 
-    case Depth of
-        1 -> resolve_direct(Subject, Predicate, Direction);
-        N when N > 1 -> resolve_traverse(Subject, Predicate, N, Direction)
-    end;
+init(_Args) -> {ok, undefined}.
+
+handle_request(Payload, State) ->
+    case resolve(Payload) of
+        {ok, Result} -> {reply, #{rows => Result}, State};
+        {error, Reason} -> {error, Reason, State}
+    end.
+
+%%====================================================================
+%% API
+%%====================================================================
+
+%% RPC payloads decode ATOM-keyed (macula_response's contract) — see
+%% learn_link.erl's moduledoc for why this differs from a plain HTTP body.
+-spec resolve(map()) -> {ok, [map()]} | {error, term()}.
+resolve(#{subject := Subject} = Params) ->
+    Predicate = maps:get(predicate, Params, undefined),
+    Depth = maps:get(depth, Params, 1),
+    Direction = maps:get(direction, Params, <<"out">>),
+    dispatch(Subject, Predicate, Depth, Direction);
 resolve(_Params) ->
     {error, missing_subject}.
+
+dispatch(Subject, Predicate, 1, Direction) ->
+    resolve_direct(Subject, Predicate, Direction);
+dispatch(Subject, Predicate, Depth, Direction) when is_integer(Depth), Depth > 1 ->
+    resolve_traverse(Subject, Predicate, Depth, Direction);
+dispatch(_Subject, _Predicate, _Depth, _Direction) ->
+    {error, invalid_depth}.
 
 %%====================================================================
 %% Internal
@@ -70,45 +97,98 @@ resolve_direct(Subject, undefined, <<"both">>) ->
 resolve_direct(_, _, _) ->
     {error, invalid_direction}.
 
-resolve_traverse(Subject, Predicate, Depth, _Direction) ->
-    PredFilter = case Predicate of
-        undefined -> <<"">>;
-        _Pred -> <<", predicate: $predicate">>
-    end,
-    Params0 = #{<<"subject">> => Subject},
-    Params = case Predicate of
-        undefined -> Params0;
-        Pred -> Params0#{<<"predicate">> => Pred}
-    end,
-
-    %% Recursive Datalog: reachable entities within N hops.
-    Query = <<
-        "reachable[entity, hop] := *links{subject: $subject, object: entity", PredFilter/binary, "}, hop = 1\n"
-        "reachable[entity, hop] := reachable[prev, prev_hop],\n"
-        "  *links{subject: prev, object: entity", PredFilter/binary, "},\n"
-        "  hop = prev_hop + 1, hop <= ", (integer_to_binary(Depth))/binary, "\n"
-        "?[entity, hop] := reachable[entity, hop], entity != $subject\n"
-        ":order hop, entity"
-    >>,
+%% Direction-aware N-hop traversal. `out' walks subject->object edges
+%% forward, `in' walks object->subject edges backward (what reaches
+%% `Subject'), `both' unions the two starting steps and continues forward
+%% from either. Previously this ignored Direction outright and always
+%% walked forward, so `direction => <<"in">>' silently returned the wrong
+%% answer instead of an error.
+resolve_traverse(_Subject, _Predicate, _Depth, Direction)
+  when Direction =/= <<"out">>, Direction =/= <<"in">>, Direction =/= <<"both">> ->
+    {error, invalid_direction};
+resolve_traverse(Subject, Predicate, Depth, Direction) ->
+    PredFilter = pred_filter(Predicate),
+    Params = traverse_params(Subject, Predicate),
+    Query = traverse_query(Direction, PredFilter, Depth),
     run_query(Query, Params).
+
+pred_filter(undefined) -> <<"">>;
+pred_filter(_Pred) -> <<", predicate: $predicate">>.
+
+traverse_params(Subject, undefined) ->
+    #{<<"subject">> => Subject};
+traverse_params(Subject, Predicate) ->
+    #{<<"subject">> => Subject, <<"predicate">> => Predicate}.
+
+traverse_query(<<"out">>, PredFilter, Depth) ->
+    <<
+        (seed_rule(<<"subject: $subject">>, PredFilter))/binary,
+        (step_rule(<<"subject: prev">>, PredFilter, Depth))/binary,
+        (result_rule())/binary
+    >>;
+traverse_query(<<"in">>, PredFilter, Depth) ->
+    <<
+        (seed_rule(<<"object: $subject">>, PredFilter))/binary,
+        (step_rule(<<"object: prev">>, PredFilter, Depth))/binary,
+        (result_rule())/binary
+    >>;
+traverse_query(<<"both">>, PredFilter, Depth) ->
+    <<
+        (seed_rule(<<"subject: $subject">>, PredFilter))/binary,
+        (seed_rule(<<"object: $subject">>, PredFilter))/binary,
+        (step_rule(<<"subject: prev">>, PredFilter, Depth))/binary,
+        (step_rule(<<"object: prev">>, PredFilter, Depth))/binary,
+        (result_rule())/binary
+    >>.
+
+%% The first hop: entities directly linked to $subject via `Anchor'
+%% (`subject: $subject' for an outgoing edge, `object: $subject' for an
+%% incoming one). `entity' is always the OTHER end of the link.
+seed_rule(Anchor, PredFilter) ->
+    Entity = other_end(Anchor),
+    <<"reachable[entity, hop] := *links{", Anchor/binary, ", ", Entity/binary,
+      ": entity", PredFilter/binary, "}, hop = 1\n">>.
+
+%% Subsequent hops: continue from whichever entity the previous hop
+%% reached (`prev'), same anchor/other-end shape, capped at Depth.
+step_rule(Anchor, PredFilter, Depth) ->
+    Entity = other_end(Anchor),
+    <<"reachable[entity, hop] := reachable[prev, prev_hop],\n"
+      "  *links{", Anchor/binary, ", ", Entity/binary, ": entity", PredFilter/binary, "},\n"
+      "  hop = prev_hop + 1, hop <= ", (integer_to_binary(Depth))/binary, "\n">>.
+
+other_end(<<"subject: prev">>) -> <<"object">>;
+other_end(<<"object: prev">>) -> <<"subject">>;
+other_end(<<"subject: $subject">>) -> <<"object">>;
+other_end(<<"object: $subject">>) -> <<"subject">>.
+
+result_rule() ->
+    <<"?[entity, hop] := reachable[entity, hop], entity != $subject\n"
+      ":order hop, entity">>.
 
 run_query(Query, Params) ->
     case hecate_graph_store:run(Query, Params) of
+        {ok, #{<<"headers">> := Headers, <<"rows">> := Rows}} ->
+            {ok, rows_to_maps(Headers, Rows)};
         {ok, #{<<"rows">> := Rows}} ->
-            {ok, rows_to_maps(Rows)};
-        {ok, Result} when is_map(Result) ->
-            {ok, maps:get(<<"rows">>, Result, [])};
+            {ok, Rows};
         {error, Reason} = Error ->
             logger:warning("resolve_link query failed: ~p", [Reason]),
             Error
     end.
 
-rows_to_maps(Rows) ->
-    [row_to_map(Row) || Row <- Rows].
+rows_to_maps(Headers, Rows) ->
+    [row_to_map(Headers, Row) || Row <- Rows].
 
-row_to_map(Row) when is_list(Row) ->
-    %% CozoDB returns rows as lists of values in column order.
-    %% The caller knows the order from the query; we return a list.
-    %% For convenience, if the row has named headers we could map them,
-    %% but CozoDB's JSON response includes headers separately.
-    {row, Row}.
+%% CozoDB returns each row as a positional list in column order, with the
+%% column names in `headers' (see the NIF's `NamedRows'-derived JSON).
+%% Zipped into a map so a mesh caller gets named fields, matching this
+%% module's own `-spec ... {ok, [map()]}' — previously this returned a
+%% bare `{row, Row}' tuple that matched neither the spec nor any decoder
+%% downstream expected of it.
+row_to_map(Headers, Row) when length(Headers) =:= length(Row) ->
+    maps:from_list(lists:zip(Headers, Row));
+row_to_map(_Headers, Row) ->
+    %% Header/row arity mismatch — fall back to the raw row rather than
+    %% crash zipping mismatched lists.
+    Row.

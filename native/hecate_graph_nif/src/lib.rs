@@ -3,16 +3,25 @@
 //! Embeds CozoDB — a transactional, relational-graph-vector database that
 //! uses Datalog for queries — as an Erlang NIF via Rustler.
 //!
-//! The NIF owns a single CozoDB instance backed by RocksDB on local disk.
-//! All queries are Datalog strings, so the Erlang side never needs to
-//! know the internal storage format.
+//! The NIF owns a single CozoDB instance (`cozo::DbInstance`, the crate's
+//! own storage-agnostic facade) backed by RocksDB on local disk. All
+//! queries are Datalog strings, so the Erlang side never needs to know the
+//! internal storage format.
 //!
 //! ## NIF functions
 //!
 //! - `open(Path)` — open or create a CozoDB instance at `Path`
-//! - `run(Query, Params)` — run a Datalog query, return rows as a list of maps
-//! - `run_script(Script)` — run a multi-statement Datalog script
-//! - `close()` — close the database
+//! - `run_query(Resource, Query, Params)` — run a Datalog query with params
+//! - `run_script(Resource, Script)` — run a multi-statement Datalog script
+//! - `close(Resource)` — drop the underlying database handle, releasing
+//!   RocksDB's on-disk lock so the same path can be reopened
+//! - `backup(Resource, Path)` / `restore(Resource, Path)` — SQLite-file
+//!   backup/restore, via cozo's `backup_db`/`restore_backup`
+//!
+//! Every query runs through `DbInstance::run_script_fold_err/3`, which is
+//! documented panic-safe: any query error is folded into the returned JSON
+//! rather than unwinding, which matters here since a panic inside a NIF
+//! call would crash the whole BEAM VM, not just this request.
 //!
 //! ## Fallback
 //!
@@ -20,7 +29,9 @@
 //! wrapper module returns `{error, nif_not_loaded}`. There is no pure-Erlang
 //! fallback for a graph database.
 
+use cozo::{DataValue, DbInstance, ScriptMutability};
 use rustler::{Atom, Binary, Encoder, Env, MapIterator, NifResult, ResourceArc, Term};
+use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 mod atoms {
@@ -28,22 +39,16 @@ mod atoms {
         ok,
         error,
         nif_not_loaded,
-        rows,
-        status,
-        n,
-        entity_id,
-        link_id
+        database_closed,
     }
 }
 
 /// CozoDB instance wrapped in a Mutex for thread-safe access from NIFs.
-struct CozoDb(Mutex<cozo::Db>);
-
-impl Drop for CozoDb {
-    fn drop(&mut self) {
-        let _ = self.0.get_mut().map(|db| db.close());
-    }
-}
+///
+/// `Option` so `close/1` can `.take()` it, dropping the handle immediately
+/// (releasing RocksDB's LOCK file) instead of waiting for the ResourceArc
+/// to be garbage collected on the Erlang side.
+struct CozoDb(Mutex<Option<DbInstance>>);
 
 fn load(env: Env, _info: Term) -> bool {
     rustler::resource!(CozoDb, env);
@@ -52,84 +57,121 @@ fn load(env: Env, _info: Term) -> bool {
 
 /// Open or create a CozoDB instance with RocksDB storage at the given path.
 #[rustler::nif]
-fn open(path: String) -> NifResult<Term> {
-    let db = cozo::Db::open_rocksdb(&path, None)
+fn open(env: Env, path: String) -> NifResult<Term> {
+    let db = DbInstance::new("rocksdb", &path, "")
         .map_err(|e| rustler::Error::Term(Box::new(format!("cozo open failed: {}", e))))?;
-    let resource = ResourceArc::new(CozoDb(Mutex::new(db)));
-    Ok((atoms::ok(), resource).encode(env()))
+    let resource = ResourceArc::new(CozoDb(Mutex::new(Some(db))));
+    Ok((atoms::ok(), resource).encode(env))
 }
 
 /// Run a single Datalog query with optional parameters.
 ///
 /// `Params` is a map of variable name -> value bindings.
-/// Returns `{ok, [{rows, [Map, ...]}, {status, Str}]}`.
+/// Returns `{ok, #{headers => [...], rows => [...]}}` on success, or
+/// `{error, Message}` when cozo reports a query error.
 #[rustler::nif]
 fn run_query(env: Env, resource: ResourceArc<CozoDb>, query: String, params: Term) -> NifResult<Term> {
-    let db = resource.0.lock().map_err(|_| {
-        rustler::Error::Term(Box::new("cozo db mutex poisoned"))
-    })?;
-
-    let param_map = term_to_json(params)?;
-    let json_str = serde_json::to_string(&param_map)
-        .map_err(|e| rustler::Error::Term(Box::new(format!("json encode failed: {}", e))))?;
-
-    let result = db.run_script(&query, if json_str == "null" { "" } else { &json_str })
-        .map_err(|e| rustler::Error::Term(Box::new(format!("cozo query failed: {}", e))))?;
-
-    let parsed: serde_json::Value = serde_json::from_str(&result)
-        .map_err(|e| rustler::Error::Term(Box::new(format!("cozo response parse failed: {}", e))))?;
-
-    let rows = json_to_term(env, &parsed);
-    Ok((atoms::ok(), rows).encode(env))
+    with_db(env, &resource, |db| {
+        let params_map = term_to_params(params)?;
+        let result = db.run_script_fold_err(&query, params_map, ScriptMutability::Mutable);
+        Ok(query_result_to_term(env, result))
+    })
 }
 
 /// Run a multi-statement Datalog script (no parameters).
 #[rustler::nif]
 fn run_script(env: Env, resource: ResourceArc<CozoDb>, script: String) -> NifResult<Term> {
-    let db = resource.0.lock().map_err(|_| {
-        rustler::Error::Term(Box::new("cozo db mutex poisoned"))
-    })?;
-
-    let result = db.run_script(&script, "")
-        .map_err(|e| rustler::Error::Term(Box::new(format!("cozo script failed: {}", e))))?;
-
-    let parsed: serde_json::Value = serde_json::from_str(&result)
-        .map_err(|e| rustler::Error::Term(Box::new(format!("cozo response parse failed: {}", e))))?;
-
-    let rows = json_to_term(env, &parsed);
-    Ok((atoms::ok(), rows).encode(env))
+    with_db(env, &resource, |db| {
+        let result = db.run_script_fold_err(&script, BTreeMap::new(), ScriptMutability::Mutable);
+        Ok(query_result_to_term(env, result))
+    })
 }
 
-/// Close the database.
+/// Translate cozo's `run_script_fold_err` JSON envelope
+/// (`{"ok": bool, "headers": [...], "rows": [...], "took": f64}` on
+/// success, `{"ok": false, "display": "...", ...}` on a query error — per
+/// `cozo-core/src/lib.rs`'s own `run_script_fold_err`/`format_error_as_json`)
+/// into the plain `{ok, #{headers, rows}} | {error, Message}` contract every
+/// Erlang caller in this codebase expects.
+fn query_result_to_term<'a>(env: Env<'a>, mut result: serde_json::Value) -> Term<'a> {
+    let succeeded = result.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+    if succeeded {
+        if let Some(map) = result.as_object_mut() {
+            map.remove("ok");
+            map.remove("took");
+        }
+        (atoms::ok(), json_to_term(env, &result)).encode(env)
+    } else {
+        let message = result
+            .get("display")
+            .or_else(|| result.get("message"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("cozo query failed")
+            .to_string();
+        (atoms::error(), message).encode(env)
+    }
+}
+
+/// Close the database: drop the handle now rather than at GC time, so the
+/// same path can be reopened immediately (RocksDB holds an exclusive lock
+/// file for as long as any handle is alive).
 #[rustler::nif]
-fn close(_env: Env, resource: ResourceArc<CozoDb>) -> NifResult<Term> {
-    let db = resource.0.lock().map_err(|_| {
+fn close(env: Env, resource: ResourceArc<CozoDb>) -> NifResult<Term> {
+    let mut guard = resource.0.lock().map_err(|_| {
         rustler::Error::Term(Box::new("cozo db mutex poisoned"))
     })?;
-    db.close();
-    Ok(atoms::ok().encode(_env))
+    *guard = None;
+    Ok(atoms::ok().encode(env))
 }
 
 /// Backup the database to a SQLite file.
 #[rustler::nif]
-fn backup(_env: Env, resource: ResourceArc<CozoDb>, path: String) -> NifResult<Term> {
-    let db = resource.0.lock().map_err(|_| {
-        rustler::Error::Term(Box::new("cozo db mutex poisoned"))
-    })?;
-    db.backup(&path)
-        .map_err(|e| rustler::Error::Term(Box::new(format!("cozo backup failed: {}", e))))?;
-    Ok(atoms::ok().encode(_env))
+fn backup(env: Env, resource: ResourceArc<CozoDb>, path: String) -> NifResult<Term> {
+    with_db(env, &resource, |db| {
+        db.backup_db(&path)
+            .map_err(|e| rustler::Error::Term(Box::new(format!("cozo backup failed: {}", e))))?;
+        Ok(atoms::ok().encode(env))
+    })
 }
 
 /// Restore the database from a SQLite file.
 #[rustler::nif]
-fn restore(_env: Env, resource: ResourceArc<CozoDb>, path: String) -> NifResult<Term> {
-    let db = resource.0.lock().map_err(|_| {
+fn restore(env: Env, resource: ResourceArc<CozoDb>, path: String) -> NifResult<Term> {
+    with_db(env, &resource, |db| {
+        db.restore_backup(&path)
+            .map_err(|e| rustler::Error::Term(Box::new(format!("cozo restore failed: {}", e))))?;
+        Ok(atoms::ok().encode(env))
+    })
+}
+
+/// Lock the resource and run `f` against the open `DbInstance`, or return
+/// `{error, database_closed}` if `close/1` already dropped it.
+fn with_db<'a, F>(env: Env<'a>, resource: &ResourceArc<CozoDb>, f: F) -> NifResult<Term<'a>>
+where
+    F: FnOnce(&DbInstance) -> NifResult<Term<'a>>,
+{
+    let guard = resource.0.lock().map_err(|_| {
         rustler::Error::Term(Box::new("cozo db mutex poisoned"))
     })?;
-    db.restore(&path)
-        .map_err(|e| rustler::Error::Term(Box::new(format!("cozo restore failed: {}", e))))?;
-    Ok(atoms::ok().encode(_env))
+    match guard.as_ref() {
+        Some(db) => f(db),
+        None => Ok((atoms::error(), atoms::database_closed()).encode(env)),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Params: Erlang term -> BTreeMap<String, DataValue>
+// ---------------------------------------------------------------------------
+
+fn term_to_params(params: Term) -> NifResult<BTreeMap<String, DataValue>> {
+    match term_to_json(params)? {
+        serde_json::Value::Object(obj) => Ok(obj
+            .into_iter()
+            .map(|(k, v)| (k, DataValue::from(v)))
+            .collect()),
+        serde_json::Value::Null => Ok(BTreeMap::new()),
+        _ => Err(rustler::Error::Term(Box::new("params must be a map"))),
+    }
 }
 
 // ---------------------------------------------------------------------------

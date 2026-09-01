@@ -18,7 +18,18 @@ fi
 
 echo "[hecate-graph] Building CozoDB NIF..."
 cd "$NIF_DIR"
-cargo build --release
+# `set -eu` only tolerates a MISSING cargo (checked above) -- an installed
+# cargo whose build genuinely fails (e.g. no libclang for cozorocks'
+# bindgen step) used to abort this whole script, which is a `pre_hooks`
+# compile hook: that took down `rebar3 compile` entirely instead of
+# degrading to the documented {error, nif_not_loaded} fallback. Guarding
+# the one command that can legitimately fail keeps `set -e` for everything
+# else in this script.
+if ! cargo build --release; then
+    echo "[hecate-graph] WARNING: CozoDB NIF build failed -- continuing without it." >&2
+    echo "[hecate-graph] hecate_graph_nif:run_query/3 will return {error, nif_not_loaded}." >&2
+    exit 0
+fi
 
 OS=$(uname -s)
 ARCH=$(uname -m)
