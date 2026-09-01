@@ -30,16 +30,22 @@ handle_request(Payload, State) ->
 %% API
 %%====================================================================
 
-%% RPC payloads decode ATOM-keyed (macula_response's contract) — see
-%% learn_link.erl's moduledoc for why this differs from a plain HTTP body.
+%% RPC payloads decode ATOM-keyed (macula_response's contract) -- but
+%% read via hecate_om_wire:field/2,3, never a hard #{key := V} match in
+%% the head. Corpus Demon 60: a hard match on the wrong key shape falls
+%% through silently to the catch-all instead of erroring loudly.
 -spec resolve(map()) -> {ok, map()} | {error, term()}.
-resolve(#{entity_id := EntityId}) ->
+resolve(Params) when is_map(Params) ->
+    resolve_(hecate_om_wire:field(entity_id, Params));
+resolve(_Params) ->
+    {error, missing_entity_id}.
+
+resolve_(undefined) -> {error, missing_entity_id};
+resolve_(EntityId) ->
     case get_entity(EntityId) of
         {ok, Entity} -> merge_link_summary(Entity, EntityId);
         {error, not_found} -> {error, entity_not_found}
-    end;
-resolve(_Params) ->
-    {error, missing_entity_id}.
+    end.
 
 merge_link_summary(Entity, EntityId) ->
     case get_link_summary(EntityId) of

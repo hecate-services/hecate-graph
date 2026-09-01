@@ -44,21 +44,31 @@ handle_request(Payload, State) ->
 %% API
 %%====================================================================
 
-%% RPC payloads decode with ATOM keys (macula_response's contract — the
-%% same shape hecate_stations' list_stations.erl consumes), never binary
-%% keys; a plain JSON HTTP body would decode binary-keyed, but that's a
-%% different path this module doesn't serve.
+%% RPC payloads decode with ATOM keys (macula_response's contract) --
+%% but read via hecate_om_wire:field/2,3, never a hard #{key := V} match
+%% in the head. Corpus Demon 60: a hard match on the wrong key shape
+%% doesn't error, it silently falls through to the catch-all clause --
+%% "missing_required_fields" for a call that supplied every field, the
+%% believable-domain-error shape the corpus entry specifically warns
+%% about, indistinguishable from a genuine caller mistake.
 -spec learn(map()) -> {ok, map()} | {error, term()}.
-learn(#{subject := Subject,
-        predicate := Predicate,
-        object := Object} = Params) ->
-    Confidence = maps:get(confidence, Params, 1.0),
-    Metadata = maps:get(metadata, Params, #{}),
-    Now = erlang:system_time(millisecond),
-    Source = hecate_graph_facts:reporter(),
-    ensure_subject(Subject, Predicate, Object, Confidence, Metadata, Now, Source);
+learn(Params) when is_map(Params) ->
+    learn_(hecate_om_wire:field(subject, Params),
+           hecate_om_wire:field(predicate, Params),
+           hecate_om_wire:field(object, Params),
+           Params);
 learn(_Params) ->
     {error, missing_required_fields}.
+
+learn_(undefined, _Predicate, _Object, _Params) -> {error, missing_required_fields};
+learn_(_Subject, undefined, _Object, _Params) -> {error, missing_required_fields};
+learn_(_Subject, _Predicate, undefined, _Params) -> {error, missing_required_fields};
+learn_(Subject, Predicate, Object, Params) ->
+    Confidence = hecate_om_wire:field(confidence, Params, 1.0),
+    Metadata = hecate_om_wire:field(metadata, Params, #{}),
+    Now = erlang:system_time(millisecond),
+    Source = hecate_graph_facts:reporter(),
+    ensure_subject(Subject, Predicate, Object, Confidence, Metadata, Now, Source).
 
 %%====================================================================
 %% Internal — sequential fallible steps, one function per step so each
