@@ -185,9 +185,20 @@ run_schema_step(Resource, Script) ->
         {error, Reason} -> handle_schema_error(Reason)
     end.
 
+%% Restart idempotency: on any boot after the first, `:create'/`::index
+%% create' hit relations/indexes the previous boot already made. CozoDB's
+%% real wording for that, confirmed live on a genuine restart, is
+%% "Stored relation links conflicts with an existing one" -- NOT
+%% "already exists", which this checked for originally and which never
+%% matched, so every restart after the first crashed the whole service
+%% on a schema step that should have been a silent no-op. Checking for
+%% both substrings since index-creation conflicts weren't observed
+%% directly and may word it differently.
 handle_schema_error(Reason) ->
     ReasonStr = iolist_to_binary(io_lib:format("~p", [Reason])),
-    case binary:match(ReasonStr, <<"already exists">>) of
-        nomatch -> {error, Reason};
-        _ -> ok
+    AlreadyExists = binary:match(ReasonStr, <<"already exist">>) =/= nomatch,
+    Conflicts = binary:match(ReasonStr, <<"conflicts with an existing">>) =/= nomatch,
+    case AlreadyExists orelse Conflicts of
+        false -> {error, Reason};
+        true -> ok
     end.
