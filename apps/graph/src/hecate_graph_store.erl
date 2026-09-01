@@ -39,7 +39,12 @@
 %% an unrelated, never-populated base relation -- it is not how CozoDB
 %% indexes anything). `entities' needs none: `id' is already its primary
 %% key, so a point lookup by id is already O(1) via the key itself.
--define(SCHEMA, "
+%% A binary literal, not a plain string -- the NIF decodes its script
+%% argument as a Rust String, which rustler only accepts from an Erlang
+%% BINARY. A charlist here would hit the exact same badarg the data_dir
+%% path argument did (see init/1's own note) the moment schema init runs,
+%% right after a successful open/1.
+-define(SCHEMA, <<"
     :create entities {
         id: String
         =>
@@ -61,7 +66,7 @@
 
     ::index create links:idx_links_subject {subject}
     ::index create links:idx_links_object {object}
-").
+">>).
 
 -record(state, {
     resource :: reference() | undefined,
@@ -98,7 +103,13 @@ run_script(Script) ->
 init([]) ->
     DataDir = application:get_env(hecate_graph, data_dir, "/var/lib/hecate-graph"),
     ok = filelib:ensure_dir(filename:join(DataDir, "dummy")),
-    open_store(hecate_graph_nif:open(DataDir), DataDir).
+    %% The NIF's `open/1` decodes its argument as a Rust String, which
+    %% rustler only accepts from an Erlang BINARY, not the charlist
+    %% `sys.config.src`'s `{data_dir, "..."}` actually produces --
+    %% confirmed live: passing the charlist through raised `badarg` deep
+    %% inside the NIF call, surfacing as hecate_graph_store's own
+    %% supervisor failing to start with no clearer signal than that.
+    open_store(hecate_graph_nif:open(unicode:characters_to_binary(DataDir)), DataDir).
 
 open_store({ok, Resource}, DataDir) ->
     init_with_schema(init_schema(Resource), Resource, DataDir);
