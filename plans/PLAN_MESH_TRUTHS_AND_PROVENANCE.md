@@ -202,11 +202,27 @@ Real open questions before this is buildable, not just "nice future work":
 
 ## Phases Summary
 
-- [ ] **Phase 1** — Caller/publisher as graph entities (blocked on the
-      `macula_response.erl` fix for the RPC half; pub/sub half already has
-      what it needs)
-- [ ] **Phase 2** — Subscribe to a well-known truths topic, confidence
-      tiered by provenance quality
+- [x] **Phase 1** — Caller/publisher as graph entities. DONE 2026-09-01:
+      the actual blocker was `macula_station_link.erl`'s `handle_inbound_call/2`
+      (not `macula_response.erl` as this section guessed before checking —
+      it decoded the frame and dropped `caller` before `macula_response`
+      ever saw the payload). Fixed by merging `caller` into `Payload`
+      rather than changing `handle_request/2`'s arity, so none of the
+      6+ other repos implementing it needed to change at all (macula
+      10.15.0, hecate_om 0.22.0's `hecate_om_wire:caller/1`, hecate-graph
+      0.2.0's `learn_link`).
+- [x] **Phase 2** — Subscribe to a well-known truths topic, confidence
+      tiered by provenance quality. DONE 2026-09-01: topic is
+      `truth_asserted` (flat, unprefixed — matching `entity_learned`/
+      `link_learned` and every other real topic on this mesh, not the
+      "mesh.truth_asserted" guess above). Also needed a second small
+      macula fix (10.16.0) — `publisher_verified` was computed in
+      `on_inbound_event/5` and discarded before reaching subscribers,
+      the same class of gap as Phase 1's `caller`, just one layer over.
+      An INVALID signature (present but failed verification) is rejected
+      outright, not recorded at a lower confidence — the table above has
+      no row for it because Phase 1 can't reach that state on the RPC
+      side. hecate-graph 0.3.0.
 - [ ] **Phase 3** — `narrate_graph` as a separate, pluggable-backend desk
 - [ ] **Phase 4** — Citizen lookup via delegation-facts traversal (depends
       on the citizen-identity plan)
