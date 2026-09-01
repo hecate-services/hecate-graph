@@ -65,7 +65,21 @@
     truths_unsigned_publisher_gets_confidence_04/1,
     truths_missing_publisher_verified_key_degrades_gracefully/1,
     truths_invalid_signature_rejected/1,
-    truths_learn_link_error_does_not_crash/1
+    truths_learn_link_error_does_not_crash/1,
+    %% narrate_entity / narrate_link / hecate_graph_narrator
+    narrate_entity_returns_prose/1,
+    narrate_entity_missing_entity_id/1,
+    narrate_entity_propagates_resolve_error/1,
+    narrate_link_returns_prose/1,
+    narrate_link_missing_subject/1,
+    narrator_falls_back_to_template_on_backend_error/1,
+    narrator_falls_back_to_template_on_backend_crash/1,
+    narrate_template_entity_sentence/1,
+    narrate_template_links_sentence/1,
+    narrate_template_no_links/1,
+    narrate_hecate_llm_calls_hecate_llm_chat/1,
+    narrate_hecate_llm_uses_opts_model_override/1,
+    narrate_hecate_llm_dark_mesh_returns_error/1
 ]).
 
 %%====================================================================
@@ -103,7 +117,20 @@ all() ->
      truths_unsigned_publisher_gets_confidence_04,
      truths_missing_publisher_verified_key_degrades_gracefully,
      truths_invalid_signature_rejected,
-     truths_learn_link_error_does_not_crash
+     truths_learn_link_error_does_not_crash,
+     narrate_entity_returns_prose,
+     narrate_entity_missing_entity_id,
+     narrate_entity_propagates_resolve_error,
+     narrate_link_returns_prose,
+     narrate_link_missing_subject,
+     narrator_falls_back_to_template_on_backend_error,
+     narrator_falls_back_to_template_on_backend_crash,
+     narrate_template_entity_sentence,
+     narrate_template_links_sentence,
+     narrate_template_no_links,
+     narrate_hecate_llm_calls_hecate_llm_chat,
+     narrate_hecate_llm_uses_opts_model_override,
+     narrate_hecate_llm_dark_mesh_returns_error
     ].
 
 init_per_suite(Config) ->
@@ -573,6 +600,157 @@ truths_learn_link_error_does_not_crash(_Config) ->
         <<"truth_asserted">>,
         #{subject => <<"a">>, predicate => <<"knows">>, object => <<"b">>},
         #{publisher => <<10, 11, 12>>, publisher_verified => true}).
+
+%%====================================================================
+%% narrate_entity / narrate_link / hecate_graph_narrator tests (Phase 3)
+%%====================================================================
+
+narrate_entity_returns_prose(_Config) ->
+    meck:new(resolve_entity, [passthrough]),
+    meck:new(hecate_graph_narrator, [passthrough]),
+    Entity = #{attributes => #{}, out_degree => 2, in_degree => 1, predicates => [<<"knows">>]},
+    meck:expect(resolve_entity, resolve, fun(#{entity_id := <<"did:macula:alice">>}) ->
+        {ok, Entity}
+    end),
+    meck:expect(hecate_graph_narrator, narrate, fun(Subgraph, _Opts) ->
+        ?assertEqual(#{type => entity, entity_id => <<"did:macula:alice">>, entity => Entity}, Subgraph),
+        {ok, <<"Alice knows two people.">>}
+    end),
+
+    {ok, Result} = narrate_entity:narrate(#{entity_id => <<"did:macula:alice">>}),
+
+    ?assertEqual(<<"did:macula:alice">>, maps:get(entity_id, Result)),
+    ?assertEqual(<<"Alice knows two people.">>, maps:get(prose, Result)),
+    meck:unload(hecate_graph_narrator),
+    meck:unload(resolve_entity).
+
+narrate_entity_missing_entity_id(_Config) ->
+    {error, missing_entity_id} = narrate_entity:narrate(#{}).
+
+narrate_entity_propagates_resolve_error(_Config) ->
+    meck:new(resolve_entity, [passthrough]),
+    meck:expect(resolve_entity, resolve, fun(_) -> {error, entity_not_found} end),
+
+    {error, entity_not_found} = narrate_entity:narrate(#{entity_id => <<"did:macula:nobody">>}),
+    meck:unload(resolve_entity).
+
+narrate_link_returns_prose(_Config) ->
+    meck:new(resolve_link, [passthrough]),
+    meck:new(hecate_graph_narrator, [passthrough]),
+    Links = [#{predicate => <<"knows">>, object => <<"did:macula:bob">>,
+               confidence => 1.0, source => <<"hecate-graph">>, learned_at => 0}],
+    meck:expect(resolve_link, resolve, fun(#{subject := <<"did:macula:alice">>}) ->
+        {ok, Links}
+    end),
+    meck:expect(hecate_graph_narrator, narrate, fun(Subgraph, _Opts) ->
+        ?assertEqual(#{type => links, subject => <<"did:macula:alice">>, links => Links}, Subgraph),
+        {ok, <<"Alice knows Bob.">>}
+    end),
+
+    {ok, Result} = narrate_link:narrate(#{subject => <<"did:macula:alice">>}),
+
+    ?assertEqual(<<"did:macula:alice">>, maps:get(subject, Result)),
+    ?assertEqual(<<"Alice knows Bob.">>, maps:get(prose, Result)),
+    meck:unload(hecate_graph_narrator),
+    meck:unload(resolve_link).
+
+narrate_link_missing_subject(_Config) ->
+    {error, missing_subject} = narrate_link:narrate(#{}).
+
+%% hecate_graph_narrator's own fallback contract: ANY backend outcome
+%% other than {ok, _} -- an {error, _} return or an outright crash --
+%% falls through to narrate_template, never propagates as a failure.
+narrator_falls_back_to_template_on_backend_error(_Config) ->
+    meck:new(narrate_hecate_llm, [passthrough]),
+    meck:expect(narrate_hecate_llm, narrate, fun(_, _) -> {error, mesh_not_ready} end),
+
+    Subgraph = #{type => entity, entity_id => <<"x">>, entity => #{}},
+    {ok, Prose} = hecate_graph_narrator:narrate(Subgraph, #{}),
+
+    ?assert(is_binary(Prose)),
+    meck:unload(narrate_hecate_llm).
+
+narrator_falls_back_to_template_on_backend_crash(_Config) ->
+    meck:new(narrate_hecate_llm, [passthrough]),
+    meck:expect(narrate_hecate_llm, narrate, fun(_, _) -> erlang:error(boom) end),
+
+    Subgraph = #{type => entity, entity_id => <<"x">>, entity => #{}},
+    {ok, Prose} = hecate_graph_narrator:narrate(Subgraph, #{}),
+
+    ?assert(is_binary(Prose)),
+    meck:unload(narrate_hecate_llm).
+
+%% narrate_template itself: deterministic, no mocking, cannot fail.
+narrate_template_entity_sentence(_Config) ->
+    Subgraph = #{type => entity, entity_id => <<"did:macula:alice">>,
+                 entity => #{out_degree => 2, in_degree => 1, predicates => [<<"knows">>, <<"authored">>]}},
+    {ok, Prose} = narrate_template:narrate(Subgraph, #{}),
+    ?assert(binary:match(Prose, <<"did:macula:alice">>) =/= nomatch),
+    ?assert(binary:match(Prose, <<"2">>) =/= nomatch),
+    ?assert(binary:match(Prose, <<"knows">>) =/= nomatch).
+
+narrate_template_links_sentence(_Config) ->
+    Subgraph = #{type => links, subject => <<"did:macula:alice">>,
+                 links => [#{predicate => <<"knows">>, object => <<"did:macula:bob">>}]},
+    {ok, Prose} = narrate_template:narrate(Subgraph, #{}),
+    ?assert(binary:match(Prose, <<"did:macula:alice">>) =/= nomatch),
+    ?assert(binary:match(Prose, <<"knows">>) =/= nomatch),
+    ?assert(binary:match(Prose, <<"did:macula:bob">>) =/= nomatch).
+
+narrate_template_no_links(_Config) ->
+    Subgraph = #{type => links, subject => <<"did:macula:alice">>, links => []},
+    {ok, <<"No links found.">>} = narrate_template:narrate(Subgraph, #{}).
+
+%% narrate_hecate_llm: the mesh-calling backend itself.
+narrate_hecate_llm_calls_hecate_llm_chat(_Config) ->
+    meck:new(hecate_om, [non_strict]),
+    meck:new(hecate_om_identity, [non_strict]),
+    meck:new(macula, [non_strict]),
+    meck:expect(hecate_om, macula_client, fun() -> {ok, fake_pool} end),
+    meck:expect(hecate_om_identity, realm, fun() -> {ok, <<"realm">>} end),
+    meck:expect(macula, call, fun(fake_pool, <<"realm">>, <<"hecate-llm.chat">>, Payload, _Timeout) ->
+        ?assertEqual(<<"moonshotai/kimi-k3">>, maps:get(<<"model">>, Payload)),
+        Messages = maps:get(<<"messages">>, Payload),
+        ?assertEqual(2, length(Messages)),
+        {ok, #{content => <<"prose from nvidia">>}}
+    end),
+
+    Subgraph = #{type => entity, entity_id => <<"x">>, entity => #{}},
+    {ok, <<"prose from nvidia">>} = narrate_hecate_llm:narrate(Subgraph, #{}),
+
+    meck:unload(macula),
+    meck:unload(hecate_om_identity),
+    meck:unload(hecate_om).
+
+narrate_hecate_llm_uses_opts_model_override(_Config) ->
+    meck:new(hecate_om, [non_strict]),
+    meck:new(hecate_om_identity, [non_strict]),
+    meck:new(macula, [non_strict]),
+    meck:expect(hecate_om, macula_client, fun() -> {ok, fake_pool} end),
+    meck:expect(hecate_om_identity, realm, fun() -> {ok, <<"realm">>} end),
+    meck:expect(macula, call, fun(fake_pool, <<"realm">>, <<"hecate-llm.chat">>, Payload, _Timeout) ->
+        ?assertEqual(<<"some/other-model">>, maps:get(<<"model">>, Payload)),
+        {ok, #{content => <<"ok">>}}
+    end),
+
+    Subgraph = #{type => entity, entity_id => <<"x">>, entity => #{}},
+    {ok, <<"ok">>} = narrate_hecate_llm:narrate(Subgraph, #{model => <<"some/other-model">>}),
+
+    meck:unload(macula),
+    meck:unload(hecate_om_identity),
+    meck:unload(hecate_om).
+
+narrate_hecate_llm_dark_mesh_returns_error(_Config) ->
+    meck:new(hecate_om, [non_strict]),
+    meck:new(hecate_om_identity, [non_strict]),
+    meck:expect(hecate_om, macula_client, fun() -> {error, not_connected} end),
+    meck:expect(hecate_om_identity, realm, fun() -> {error, no_realm} end),
+
+    Subgraph = #{type => entity, entity_id => <<"x">>, entity => #{}},
+    {error, mesh_not_ready} = narrate_hecate_llm:narrate(Subgraph, #{}),
+
+    meck:unload(hecate_om_identity),
+    meck:unload(hecate_om).
 
 %%====================================================================
 %% Mock helpers

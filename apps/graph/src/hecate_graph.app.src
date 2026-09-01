@@ -1,6 +1,6 @@
 {application, hecate_graph, [
     {description, "Embeddable relational-graph database (CozoDB) as a mesh service"},
-    {vsn, "0.3.0"},
+    {vsn, "0.4.0"},
     {registered, [hecate_graph_sup]},
     {mod, {hecate_graph_app, []}},
     {applications, [
@@ -15,7 +15,20 @@
         %% creates an entity that didn't exist).
         {entity_learned_topic, <<"entity_learned">>},
         %% Topic for link discovery facts.
-        {link_learned_topic, <<"link_learned">>}
+        {link_learned_topic, <<"link_learned">>},
+        %% Phase 2: shared, opt-in topic for mesh-wide truth assertions.
+        {truth_asserted_topic, <<"truth_asserted">>},
+        %% Phase 3: narrate_entity/narrate_link, on by default -- a realm
+        %% operator sets this false to disable narration alone (cost/
+        %% sovereignty/latency) while keeping raw resolve_* live.
+        {narration_enabled, true},
+        %% Default narrator backend module (hecate_graph_narrator's own
+        %% -callback). Swappable, not hardcoded to any one provider.
+        {narrator_backend, narrate_hecate_llm},
+        %% Default model for narrate_hecate_llm. NVIDIA's own catalog
+        %% needs "org/model"-namespaced ids -- see that module's own
+        %% comment for why this specific one.
+        {narrator_model, <<"moonshotai/kimi-k3">>}
     ]},
     {modules, []},
     {licenses, ["Apache-2.0"]},

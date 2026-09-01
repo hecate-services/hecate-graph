@@ -2,6 +2,36 @@
 
 All notable changes to hecate-graph will be documented in this file.
 
+## [0.4.0] - 2026-09-02
+
+### Added
+
+- Phase 3 (PLAN_MESH_TRUTHS_AND_PROVENANCE.md): `narrate_entity` and
+  `narrate_link`, LLM-backed prose descriptions of an entity/a subject's
+  links. Their own desks and their own mesh capabilities
+  (`hecate_graph.narrate_entity`/`.narrate_link`), independent of
+  `resolve_entity`/`resolve_link` -- an LLM-backed call has a
+  fundamentally different cost/latency/failure profile than a local
+  Cozo query, so this is deliberately not a `format' parameter on the
+  raw procedures. `narration_enabled` (app env, default true) lets a
+  realm operator disable narration alone.
+- `hecate_graph_narrator` behaviour + dispatcher: the configured backend
+  (`narrator_backend`, default `narrate_hecate_llm`) gets first try, and
+  ANY failure -- `{error, _}`, a crash, a dark mesh -- falls through to
+  `narrate_template`'s deterministic sentence-per-triple rendering,
+  never a hard failure. Same graceful-degrade precedent this codebase
+  already has for the CozoDB NIF itself.
+- `narrate_hecate_llm`: the default backend, calls `hecate-llm.chat`
+  over the mesh rather than carrying an LLM API key/HTTP client locally
+  -- hecate-llm exists specifically so services don't each duplicate
+  that (first real consumer of hecate-llm, itself deployed for the
+  first time today alongside this). NVIDIA's free tier
+  (`moonshotai/kimi-k3`, confirmed working against this account) is the
+  cost-driven default model -- Melious priced out at this stage, though
+  it's wired into hecate-llm's own provider list for when that changes.
+  A caller can override the model per-call.
+- 13 new tests, 43 total.
+
 ## [0.3.0] - 2026-09-01
 
 ### Added
