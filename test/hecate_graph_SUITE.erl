@@ -43,6 +43,7 @@
     learn_link_with_metadata/1,
     learn_link_with_confidence/1,
     learn_link_store_error/1,
+    learn_link_handles_real_wire_shaped_values/1,
     %% resolve_link
     resolve_link_direct_out/1,
     resolve_link_direct_out_with_predicate/1,
@@ -75,6 +76,7 @@ all() ->
      learn_link_with_metadata,
      learn_link_with_confidence,
      learn_link_store_error,
+     learn_link_handles_real_wire_shaped_values,
      resolve_link_direct_out,
      resolve_link_direct_out_with_predicate,
      resolve_link_direct_in,
@@ -239,6 +241,31 @@ learn_link_store_error(_Config) ->
         predicate => <<"knows">>,
         object => <<"did:macula:bob">>
     })).
+
+%% hecate_om <0.20.0 (this repo's own resolved version until an upstream
+%% patch round on 2026-09-01) returned hecate_om_wire:field/2,3's VALUES
+%% exactly as the wire decoded them -- a JSON string RPC arg decodes as a
+%% CBOR text string, {text, binary()}, not a bare binary(). 0.20.0 fixed
+%% field/2,3 to unwrap that before returning. Every other test in this
+%% suite passes plain binaries directly and would pass identically
+%% whether or not that fix (or this module's use of it) were broken --
+%% this one specifically exercises the real wire shape, so a regression
+%% here actually fails a test instead of silently passing on
+%% synthetic-shaped test data. Would have badarg'd inside link_id/4's
+%% binary concatenation on the pre-fix hecate_om, not just returned a
+%% wrong value.
+learn_link_handles_real_wire_shaped_values(_Config) ->
+    mock_store_entity_exists(0),
+    mock_facts_no_publish(),
+
+    {ok, Result} = learn_link:learn(#{
+        subject => {text, <<"did:macula:alice">>},
+        predicate => {text, <<"knows">>},
+        object => {text, <<"did:macula:bob">>}
+    }),
+
+    ?assertEqual(2, maps:get(entities_new, Result)),
+    ?assert(is_binary(maps:get(link_id, Result))).
 
 %%====================================================================
 %% resolve_link tests
