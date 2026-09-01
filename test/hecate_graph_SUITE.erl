@@ -709,7 +709,7 @@ narrate_hecate_llm_calls_hecate_llm_chat(_Config) ->
     meck:expect(hecate_om, macula_client, fun() -> {ok, fake_pool} end),
     meck:expect(hecate_om_identity, realm, fun() -> {ok, <<"realm">>} end),
     meck:expect(macula, call, fun(fake_pool, <<"realm">>, <<"hecate-llm.chat">>, Payload, _Timeout) ->
-        ?assertEqual(<<"moonshotai/kimi-k3">>, maps:get(<<"model">>, Payload)),
+        ?assertEqual(<<"deepseek-v4-pro">>, maps:get(<<"model">>, Payload)),
         Messages = maps:get(<<"messages">>, Payload),
         ?assertEqual(2, length(Messages)),
         {ok, #{content => <<"prose from nvidia">>}}

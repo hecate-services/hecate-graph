@@ -3,13 +3,14 @@
 %%% hecate-llm exists specifically so services don't each duplicate
 %%% that. See hecate-services/hecate-llm.
 %%%
-%%% NVIDIA's free tier is the cost-driven default model (2026-09-02
-%%% decision -- Melious priced out at this stage; Melious itself stays
-%%% wired into hecate-llm's own provider list for when that changes,
-%%% just not this service's default). `narrator_model' is app-env
-%%% configurable specifically so it can be repointed post-deploy
-%%% without a code change once hecate-llm's own model detection
-%%% confirms what's actually live.
+%%% DeepSeek is the cost-driven default model (switched 2026-09-02 from
+%%% NVIDIA's free tier -- cheap rather than free, but not subject to a
+%%% free tier's own rate limits/deprecation risk; NVIDIA and Melious both
+%%% stay wired into hecate-llm's own provider list, just not this
+%%% service's default). `narrator_model' is app-env configurable
+%%% specifically so it can be repointed post-deploy without a code
+%%% change once hecate-llm's own model detection confirms what's
+%%% actually live.
 -module(narrate_hecate_llm).
 -behaviour(hecate_graph_narrator).
 
@@ -33,12 +34,14 @@ narrate(Subgraph, Opts) ->
 %% A caller-supplied `model' in Opts wins (narrate_entity/narrate_link
 %% both thread hecate_om_wire:field(model, Params) through, so an RPC
 %% caller can ask for a specific model per call); the app-env default
-%% otherwise. NVIDIA's own catalog needs "org/model"-namespaced ids
-%% (bare "glm-5.2" 404s; "moonshotai/kimi-k3" is the confirmed-working
-%% one this account has -- see this workspace's own opencode.json for
-%% the same finding against the same NVIDIA_API_KEY).
+%% otherwise. "deepseek-v4-pro" is the same model id already confirmed
+%% live against this same DEEPSEEK_API_KEY elsewhere in this workspace
+%% (opencode.json: 200 on /v1/models, a real /v1/chat/completions call) --
+%% not independently re-verified against hecate-llm's own gateway yet,
+%% unlike NVIDIA's "org/model"-namespaced ids (moonshotai/kimi-k3), which
+%% this replaced as the default.
 model(undefined) ->
-    application:get_env(hecate_graph, narrator_model, <<"moonshotai/kimi-k3">>);
+    application:get_env(hecate_graph, narrator_model, <<"deepseek-v4-pro">>);
 model(Model) when is_binary(Model) ->
     Model.
 

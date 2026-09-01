@@ -2,6 +2,17 @@
 
 All notable changes to hecate-graph will be documented in this file.
 
+## [0.4.1] - 2026-09-02
+
+### Changed
+
+- `narrate_hecate_llm`'s default model switched from NVIDIA's free tier
+  (`moonshotai/kimi-k3`) to DeepSeek (`deepseek-v4-pro`) -- cheap rather
+  than free, but not subject to a free tier's own rate limits/deprecation
+  risk. hecate-llm now auto-detects `DEEPSEEK_API_KEY` the same way as
+  every other OpenAI-compatible provider it wires. NVIDIA and Melious
+  both stay available, just not the default.
+
 ## [0.4.0] - 2026-09-02
 
 ### Added

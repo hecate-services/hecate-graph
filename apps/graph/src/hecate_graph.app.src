@@ -1,6 +1,6 @@
 {application, hecate_graph, [
     {description, "Embeddable relational-graph database (CozoDB) as a mesh service"},
-    {vsn, "0.4.0"},
+    {vsn, "0.4.1"},
     {registered, [hecate_graph_sup]},
     {mod, {hecate_graph_app, []}},
     {applications, [
@@ -25,10 +25,9 @@
         %% Default narrator backend module (hecate_graph_narrator's own
         %% -callback). Swappable, not hardcoded to any one provider.
         {narrator_backend, narrate_hecate_llm},
-        %% Default model for narrate_hecate_llm. NVIDIA's own catalog
-        %% needs "org/model"-namespaced ids -- see that module's own
+        %% Default model for narrate_hecate_llm -- see that module's own
         %% comment for why this specific one.
-        {narrator_model, <<"moonshotai/kimi-k3">>}
+        {narrator_model, <<"deepseek-v4-pro">>}
     ]},
     {modules, []},
     {licenses, ["Apache-2.0"]},
