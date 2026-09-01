@@ -70,7 +70,7 @@ fn open(env: Env, path: String) -> NifResult<Term> {
 /// Returns `{ok, #{headers => [...], rows => [...]}}` on success, or
 /// `{error, Message}` when cozo reports a query error.
 #[rustler::nif]
-fn run_query(env: Env, resource: ResourceArc<CozoDb>, query: String, params: Term) -> NifResult<Term> {
+fn run_query<'a>(env: Env<'a>, resource: ResourceArc<CozoDb>, query: String, params: Term<'a>) -> NifResult<Term<'a>> {
     with_db(env, &resource, |db| {
         let params_map = term_to_params(params)?;
         let result = db.run_script_fold_err(&query, params_map, ScriptMutability::Mutable);
@@ -203,7 +203,7 @@ fn term_to_json(term: Term) -> NifResult<serde_json::Value> {
     if term.is_list() {
         let list: Vec<Term> = term.decode()?;
         let items: Result<Vec<serde_json::Value>, _> = list.iter()
-            .map(term_to_json)
+            .map(|t| term_to_json(*t))
             .collect();
         return Ok(serde_json::Value::Array(items?));
     }
@@ -256,4 +256,4 @@ fn json_to_term<'a>(env: Env<'a>, value: &serde_json::Value) -> Term<'a> {
     }
 }
 
-rustler::init!("hecate_graph_nif", [open, run_query, run_script, close, backup, restore], load = load);
+rustler::init!("hecate_graph_nif", load = load);

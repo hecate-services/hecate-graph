@@ -45,7 +45,7 @@ RUN ln -sf /root/.cargo/bin/rustup /usr/local/bin/cargo \
 RUN curl -fsSL https://s3.amazonaws.com/rebar3/rebar3 -o /usr/local/bin/rebar3 \
     && chmod +x /usr/local/bin/rebar3
 
-COPY rebar.config rebar.lock ./
+COPY rebar.config ./
 RUN rebar3 get-deps
 
 COPY config ./config
