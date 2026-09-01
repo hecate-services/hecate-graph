@@ -37,6 +37,15 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
 ENV PATH="/root/.cargo/bin:${PATH}"
 ENV RUSTFLAGS="-C target-feature=-crt-static"
 ENV MACULA_FORCE_SOURCE_BUILD=1
+# cozorocks' vendored RocksDB C++ sources (e.g. db/blob/blob_file_meta.h)
+# use uint64_t without an explicit #include <cstdint> -- glibc's header
+# chain happens to pull it in transitively, musl's does not, so this only
+# fails here, never on the Debian-based CI image (confirmed: the exact
+# same commit's lint-and-test job, glibc, built the NIF clean). Forcing
+# the include via CXXFLAGS is the standard musl-portability workaround
+# for exactly this class of bug -- cc-rs (what cozorocks' build.rs uses)
+# honors it, and it's non-invasive: no vendored source is patched.
+ENV CXXFLAGS="-include cstdint"
 RUN ln -sf /root/.cargo/bin/rustup /usr/local/bin/cargo \
     && ln -sf /root/.cargo/bin/rustup /usr/local/bin/rustc \
     && ln -sf /root/.cargo/bin/rustup /usr/local/bin/rustup \
