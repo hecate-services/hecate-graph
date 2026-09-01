@@ -4,8 +4,8 @@
 %%% (out-degree, in-degree, predicates). For full link traversal, use
 %%% resolve_link with a depth parameter.
 %%%
-%%% Registered as this service's `hecate_graph.resolve_entity` mesh
-%%% procedure via `hecate_om_capabilities` (see
+%%% Registered as this service's `hecate_graph.resolve_entity' mesh
+%%% procedure via `hecate_om_capabilities' (see
 %%% hecate_graph_service:capabilities/0).
 -module(resolve_entity).
 

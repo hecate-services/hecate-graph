@@ -7,8 +7,8 @@
 %%%     honoring direction the same way direct lookups do
 %%%   - Reverse: what links TO this entity?
 %%%
-%%% Registered as this service's `hecate_graph.resolve_link` mesh
-%%% procedure via `hecate_om_capabilities` (see
+%%% Registered as this service's `hecate_graph.resolve_link' mesh
+%%% procedure via `hecate_om_capabilities' (see
 %%% hecate_graph_service:capabilities/0).
 -module(resolve_link).
 

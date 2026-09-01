@@ -11,16 +11,16 @@
 %%% pre-register them.
 %%%
 %%% "Already exists" is checked and resolved in ONE round trip via CozoDB's
-%%% `:insert` (fails if the key already exists, unlike `:put' which always
+%%% `:insert' (fails if the key already exists, unlike `:put' which always
 %%% overwrites) rather than a separate exists-then-write pair of calls: two
 %%% concurrent learn_link calls for the same brand-new entity would
 %%% otherwise both observe "doesn't exist yet" and both publish
-%%% entity_learned. `:insert`'s own key-uniqueness check is the
-%%% synchronization primitive — exactly one of two racing inserts can
+%%% entity_learned. The `:insert' operation's own key-uniqueness check is
+%%% the synchronization primitive — exactly one of two racing inserts can
 %%% succeed, so exactly one entity_learned fires.
 %%%
-%%% Registered as this service's `hecate_graph.learn_link` mesh procedure
-%%% via `hecate_om_capabilities` (see hecate_graph_service:capabilities/0).
+%%% Registered as this service's `hecate_graph.learn_link' mesh procedure
+%%% via `hecate_om_capabilities' (see hecate_graph_service:capabilities/0).
 %%%
 %%% Phase 1 (PLAN_MESH_TRUTHS_AND_PROVENANCE.md): the caller becomes part
 %%% of the graph too. With macula >= 10.15.0, hecate_om_wire:caller/1

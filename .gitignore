@@ -5,6 +5,9 @@ rebar.lock
 erl_crash.dump
 rebar3.crashdump
 
+# rebar3 ex_doc output
+apps/graph/doc/
+
 # Rust / Cargo (NIF crate under native/)
 native/**/target/
 native/**/Cargo.lock

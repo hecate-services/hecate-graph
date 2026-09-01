@@ -2,6 +2,43 @@
 
 All notable changes to hecate-graph will be documented in this file.
 
+## [0.3.0] - 2026-09-01
+
+### Added
+
+- Phase 2 (PLAN_MESH_TRUTHS_AND_PROVENANCE.md): `learn_truths_from_mesh`,
+  a passive subscriber to a new shared, opt-in `truth_asserted` topic
+  (`{subject, predicate, object}`, flat name matching `entity_learned`/
+  `link_learned`'s own sibling style -- not the "mesh.truth_asserted"
+  dot-namespaced guess the plan drafted before checking real topic
+  conventions on this mesh). Calls the exact same `learn_link:learn/2`
+  entry point the RPC path already uses -- no new write path -- with
+  the mesh `publisher` filling `learn/2`'s `Caller' slot, so the
+  publisher becomes a graph entity exactly like an RPC caller does in
+  Phase 1.
+- Confidence is set by provenance quality, not the fact's own optional
+  claim: `publisher_verified = true` -> 0.7, `not_signed` -> 0.4,
+  `false` (signature present but INVALID) -> rejected outright, not
+  recorded at a lower confidence -- the plan's own table has no row for
+  this case. Requires macula >= 10.16.0 for `publisher_verified` to be
+  anything but the safe `not_signed' fallback.
+- 5 new tests, 30 total.
+
+### Fixed
+
+- edoc/ex_doc had never successfully built for this repo (confirmed by
+  checking out the pre-Phase-1 commit and re-running -- same failures).
+  Two root causes, both documented gotchas in this workspace's own
+  CLAUDE.md that nobody had caught here yet: Markdown-style double
+  backtick quoting (`` `word` ``) instead of EDoc's backtick-then-
+  single-quote convention (`` `word' ``) in several module docs, and a
+  `<<"...">>` Erlang binary literal inside `hecate_graph_facts`'s
+  moduledoc breaking the XML parser. `rebar3 ex_doc` now succeeds
+  cleanly.
+- `rebar3 lint` (elvis) had never been run against this repo either --
+  fixed one real `no_deep_nesting` finding in the new
+  `learn_truths_from_mesh` module.
+
 ## [0.2.0] - 2026-09-01
 
 ### Added

@@ -59,7 +59,13 @@
     %% resolve_entity
     resolve_entity_found/1,
     resolve_entity_not_found/1,
-    resolve_entity_missing_id/1
+    resolve_entity_missing_id/1,
+    %% learn_truths_from_mesh
+    truths_verified_publisher_gets_confidence_07/1,
+    truths_unsigned_publisher_gets_confidence_04/1,
+    truths_missing_publisher_verified_key_degrades_gracefully/1,
+    truths_invalid_signature_rejected/1,
+    truths_learn_link_error_does_not_crash/1
 ]).
 
 %%====================================================================
@@ -92,7 +98,12 @@ all() ->
      resolve_link_missing_subject,
      resolve_entity_found,
      resolve_entity_not_found,
-     resolve_entity_missing_id
+     resolve_entity_missing_id,
+     truths_verified_publisher_gets_confidence_07,
+     truths_unsigned_publisher_gets_confidence_04,
+     truths_missing_publisher_verified_key_degrades_gracefully,
+     truths_invalid_signature_rejected,
+     truths_learn_link_error_does_not_crash
     ].
 
 init_per_suite(Config) ->
@@ -107,11 +118,17 @@ end_per_suite(_Config) ->
 init_per_testcase(_TestCase, Config) ->
     meck:new(hecate_graph_store, [non_strict]),
     meck:new(hecate_graph_facts, [non_strict, passthrough]),
+    %% passthrough: learn_truths_from_mesh's own tests override
+    %% learn_link:learn/2 to assert on the call's args; every other
+    %% test calls the real learn_link (itself backed by the mocked
+    %% store above) unchanged.
+    meck:new(learn_link, [passthrough]),
     Config.
 
 end_per_testcase(_TestCase, _Config) ->
     meck:unload(hecate_graph_store),
     meck:unload(hecate_graph_facts),
+    meck:unload(learn_link),
     ok.
 
 %%====================================================================
@@ -465,6 +482,97 @@ resolve_entity_not_found(_Config) ->
 
 resolve_entity_missing_id(_Config) ->
     {error, missing_entity_id} = resolve_entity:resolve(#{}).
+
+%%====================================================================
+%% learn_truths_from_mesh tests (Phase 2)
+%%====================================================================
+
+truths_verified_publisher_gets_confidence_07(_Config) ->
+    Publisher = <<1, 2, 3>>,
+    Self = self(),
+    meck:expect(learn_link, learn, fun(Params, Caller) ->
+        Self ! {learn_called, Params, Caller},
+        {ok, #{link_id => <<"x">>, entities_new => 2}}
+    end),
+
+    learn_truths_from_mesh:on_fact(
+        <<"truth_asserted">>,
+        #{subject => <<"a">>, predicate => <<"knows">>, object => <<"b">>},
+        #{publisher => Publisher, publisher_verified => true}),
+
+    receive
+        {learn_called, Params, Caller} ->
+            ?assertEqual(0.7, maps:get(confidence, Params)),
+            ?assertEqual(Publisher, Caller)
+    after 500 -> erlang:error(learn_link_not_called) end.
+
+truths_unsigned_publisher_gets_confidence_04(_Config) ->
+    Publisher = <<4, 5, 6>>,
+    Self = self(),
+    meck:expect(learn_link, learn, fun(Params, Caller) ->
+        Self ! {learn_called, Params, Caller},
+        {ok, #{link_id => <<"x">>, entities_new => 2}}
+    end),
+
+    learn_truths_from_mesh:on_fact(
+        <<"truth_asserted">>,
+        #{subject => <<"a">>, predicate => <<"knows">>, object => <<"b">>},
+        #{publisher => Publisher, publisher_verified => not_signed}),
+
+    receive
+        {learn_called, Params, Caller} ->
+            ?assertEqual(0.4, maps:get(confidence, Params)),
+            ?assertEqual(Publisher, Caller)
+    after 500 -> erlang:error(learn_link_not_called) end.
+
+%% An older macula (pre-10.16.0) wouldn't put publisher_verified in Meta
+%% at all -- must not crash, must degrade to the same confidence as
+%% not_signed.
+truths_missing_publisher_verified_key_degrades_gracefully(_Config) ->
+    Publisher = <<13, 14, 15>>,
+    Self = self(),
+    meck:expect(learn_link, learn, fun(Params, Caller) ->
+        Self ! {learn_called, Params, Caller},
+        {ok, #{link_id => <<"x">>, entities_new => 2}}
+    end),
+
+    learn_truths_from_mesh:on_fact(
+        <<"truth_asserted">>,
+        #{subject => <<"a">>, predicate => <<"knows">>, object => <<"b">>},
+        #{publisher => Publisher}),
+
+    receive
+        {learn_called, Params, Caller} ->
+            ?assertEqual(0.4, maps:get(confidence, Params)),
+            ?assertEqual(Publisher, Caller)
+    after 500 -> erlang:error(learn_link_not_called) end.
+
+%% An INVALID signature is a stronger negative signal than absence --
+%% rejected outright, learn_link:learn/2 is never even called.
+truths_invalid_signature_rejected(_Config) ->
+    meck:expect(learn_link, learn, fun(_Params, _Caller) ->
+        erlang:error(should_not_be_called)
+    end),
+
+    ok = learn_truths_from_mesh:on_fact(
+        <<"truth_asserted">>,
+        #{subject => <<"a">>, predicate => <<"knows">>, object => <<"b">>},
+        #{publisher => <<7, 8, 9>>, publisher_verified => false}),
+
+    ?assertEqual(0, meck:num_calls(learn_link, learn, '_')).
+
+%% A learn_link failure (e.g. missing_required_fields from a malformed
+%% fact) is logged, not crashed -- one bad mesh fact must not take the
+%% subscriber down.
+truths_learn_link_error_does_not_crash(_Config) ->
+    meck:expect(learn_link, learn, fun(_Params, _Caller) ->
+        {error, missing_required_fields}
+    end),
+
+    ok = learn_truths_from_mesh:on_fact(
+        <<"truth_asserted">>,
+        #{subject => <<"a">>, predicate => <<"knows">>, object => <<"b">>},
+        #{publisher => <<10, 11, 12>>, publisher_verified => true}).
 
 %%====================================================================
 %% Mock helpers
