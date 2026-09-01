@@ -21,12 +21,31 @@
 %%%
 %%% Registered as this service's `hecate_graph.learn_link` mesh procedure
 %%% via `hecate_om_capabilities` (see hecate_graph_service:capabilities/0).
+%%%
+%%% Phase 1 (PLAN_MESH_TRUTHS_AND_PROVENANCE.md): the caller becomes part
+%%% of the graph too. With macula >= 10.15.0, hecate_om_wire:caller/1
+%%% reads the wire-authenticated identity that made this RPC (undefined
+%%% on an older macula or a payload that arrived some other way -- both
+%%% just skip provenance, same as "the caller supplied no metadata"
+%%% skips it today). When present, two extra links are recorded reusing
+%%% the SAME ensure_entity/insert_link machinery the subject/object link
+%%% already uses -- caller --asserted--> subject, caller --asserted-->
+%%% object -- at confidence 1.0 (a direct, wire-authenticated RPC call is
+%%% the plan's own highest-confidence provenance tier). Coarser than
+%%% per-triple reification (caller asserted THIS SPECIFIC link, not just
+%%% touched its endpoints) on purpose -- see the plan's Phase 1 section
+%%% for why that's deliberately out of scope for now.
 -module(learn_link).
 
 -behaviour(macula_response).
 
 -export([init/1, handle_request/2]).
--export([learn/1]).
+-export([learn/1, learn/2]).
+
+%% Confidence for a caller's own provenance link, not the asserted fact
+%% itself -- we are not uncertain that the caller made this call.
+-define(PROVENANCE_CONFIDENCE, 1.0).
+-define(ASSERTED, <<"asserted">>).
 
 %%====================================================================
 %% macula_response
@@ -35,7 +54,8 @@
 init(_Args) -> {ok, undefined}.
 
 handle_request(Payload, State) ->
-    case learn(Payload) of
+    Caller = hecate_om_wire:caller(Payload),
+    case learn(Payload, Caller) of
         {ok, Result} -> {reply, Result, State};
         {error, Reason} -> {error, Reason, State}
     end.
@@ -44,6 +64,11 @@ handle_request(Payload, State) ->
 %% API
 %%====================================================================
 
+%% @equiv learn(Params, undefined)
+-spec learn(map()) -> {ok, map()} | {error, term()}.
+learn(Params) ->
+    learn(Params, undefined).
+
 %% RPC payloads decode with ATOM keys (macula_response's contract) --
 %% but read via hecate_om_wire:field/2,3, never a hard #{key := V} match
 %% in the head. Corpus Demon 60: a hard match on the wrong key shape
@@ -51,54 +76,93 @@ handle_request(Payload, State) ->
 %% "missing_required_fields" for a call that supplied every field, the
 %% believable-domain-error shape the corpus entry specifically warns
 %% about, indistinguishable from a genuine caller mistake.
--spec learn(map()) -> {ok, map()} | {error, term()}.
-learn(Params) when is_map(Params) ->
+-spec learn(map(), binary() | undefined) -> {ok, map()} | {error, term()}.
+learn(Params, Caller) when is_map(Params) ->
     learn_(hecate_om_wire:field(subject, Params),
            hecate_om_wire:field(predicate, Params),
            hecate_om_wire:field(object, Params),
-           Params);
-learn(_Params) ->
+           Params, Caller);
+learn(_Params, _Caller) ->
     {error, missing_required_fields}.
 
-learn_(undefined, _Predicate, _Object, _Params) -> {error, missing_required_fields};
-learn_(_Subject, undefined, _Object, _Params) -> {error, missing_required_fields};
-learn_(_Subject, _Predicate, undefined, _Params) -> {error, missing_required_fields};
-learn_(Subject, Predicate, Object, Params) ->
+learn_(undefined, _Predicate, _Object, _Params, _Caller) -> {error, missing_required_fields};
+learn_(_Subject, undefined, _Object, _Params, _Caller) -> {error, missing_required_fields};
+learn_(_Subject, _Predicate, undefined, _Params, _Caller) -> {error, missing_required_fields};
+learn_(Subject, Predicate, Object, Params, Caller) ->
     Confidence = hecate_om_wire:field(confidence, Params, 1.0),
     Metadata = hecate_om_wire:field(metadata, Params, #{}),
     Now = erlang:system_time(millisecond),
     Source = hecate_graph_facts:reporter(),
-    ensure_subject(Subject, Predicate, Object, Confidence, Metadata, Now, Source).
+    ensure_subject(Subject, Predicate, Object, Confidence, Metadata, Now, Source, Caller).
 
 %%====================================================================
 %% Internal — sequential fallible steps, one function per step so each
 %% only ever nests one `case' deep (subject -> object -> link -> publish).
 %%====================================================================
 
-ensure_subject(Subject, Predicate, Object, Confidence, Metadata, Now, Source) ->
+ensure_subject(Subject, Predicate, Object, Confidence, Metadata, Now, Source, Caller) ->
     case ensure_entity(Subject, Metadata, Now, Source) of
         {error, _} = Error ->
             Error;
         {ok, SubjectNew} ->
-            ensure_object(Subject, Predicate, Object, Confidence, Metadata, Now, Source, SubjectNew)
+            ensure_object(Subject, Predicate, Object, Confidence, Metadata, Now, Source, SubjectNew, Caller)
     end.
 
-ensure_object(Subject, Predicate, Object, Confidence, Metadata, Now, Source, SubjectNew) ->
+ensure_object(Subject, Predicate, Object, Confidence, Metadata, Now, Source, SubjectNew, Caller) ->
     case ensure_entity(Object, Metadata, Now, Source) of
         {error, _} = Error ->
             Error;
         {ok, ObjectNew} ->
-            write_link(Subject, Predicate, Object, Confidence, Now, Source, SubjectNew, ObjectNew)
+            write_link(Subject, Predicate, Object, Confidence, Now, Source, SubjectNew, ObjectNew, Caller)
     end.
 
-write_link(Subject, Predicate, Object, Confidence, Now, Source, SubjectNew, ObjectNew) ->
+write_link(Subject, Predicate, Object, Confidence, Now, Source, SubjectNew, ObjectNew, Caller) ->
     LinkId = link_id(Subject, Predicate, Object, Now),
     case insert_link(LinkId, Subject, Predicate, Object, Confidence, Source, Now) of
         {error, _} = Error ->
             Error;
         ok ->
             publish_link(Subject, Predicate, Object, Confidence, Source, Now),
+            record_provenance(Caller, Subject, Object, Now, Source),
             {ok, #{link_id => LinkId, entities_new => SubjectNew + ObjectNew}}
+    end.
+
+%% Phase 1: the caller becomes a normal graph entity, asserted-linked to
+%% both endpoints it just told the graph about -- "what has X ever told
+%% the graph" becomes an ordinary resolve_link(X, direction=out,
+%% predicate=asserted) traversal, not special-cased code. `undefined'
+%% (older macula, or a payload that reached learn_link some way other
+%% than a directly-authenticated RPC) just skips this -- best-effort,
+%% not a reason to fail a write that already succeeded.
+%%
+%% Hex-encoded here, once, rather than stored as the raw 32-byte pubkey:
+%% every other node identity in this workspace is displayed/queried as
+%% hex (mesh_agents' node_id, FLEET.md's node-id column, and so on), and
+%% a raw binary entity id would make `resolve_link(caller_entity, ...)'
+%% -- the plan's own worked example -- unreachable from anything that
+%% can't paste arbitrary bytes into a query.
+record_provenance(undefined, _Subject, _Object, _Now, _Source) ->
+    ok;
+record_provenance(Caller, Subject, Object, Now, Source) ->
+    CallerHex = binary:encode_hex(Caller, lowercase),
+    case ensure_entity(CallerHex, #{}, Now, Source) of
+        {error, Reason} ->
+            logger:warning("learn_link: provenance entity for caller failed, "
+                            "skipping asserted-links: ~p", [Reason]);
+        {ok, _CallerNew} ->
+            assert_link(CallerHex, Subject, Now, Source),
+            assert_link(CallerHex, Object, Now, Source)
+    end,
+    ok.
+
+assert_link(Caller, Target, Now, Source) ->
+    LinkId = link_id(Caller, ?ASSERTED, Target, Now),
+    case insert_link(LinkId, Caller, ?ASSERTED, Target, ?PROVENANCE_CONFIDENCE, Source, Now) of
+        ok ->
+            publish_link(Caller, ?ASSERTED, Target, ?PROVENANCE_CONFIDENCE, Source, Now);
+        {error, Reason} ->
+            logger:warning("learn_link: asserted-link ~s -> ~s failed: ~p",
+                            [Caller, Target, Reason])
     end.
 
 %% Atomically create the entity if it doesn't exist yet, or report it as

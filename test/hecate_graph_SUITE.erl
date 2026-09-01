@@ -44,6 +44,8 @@
     learn_link_with_confidence/1,
     learn_link_store_error/1,
     learn_link_handles_real_wire_shaped_values/1,
+    learn_link_records_caller_provenance/1,
+    learn_link_no_provenance_without_caller/1,
     %% resolve_link
     resolve_link_direct_out/1,
     resolve_link_direct_out_with_predicate/1,
@@ -77,6 +79,8 @@ all() ->
      learn_link_with_confidence,
      learn_link_store_error,
      learn_link_handles_real_wire_shaped_values,
+     learn_link_records_caller_provenance,
+     learn_link_no_provenance_without_caller,
      resolve_link_direct_out,
      resolve_link_direct_out_with_predicate,
      resolve_link_direct_in,
@@ -266,6 +270,60 @@ learn_link_handles_real_wire_shaped_values(_Config) ->
 
     ?assertEqual(2, maps:get(entities_new, Result)),
     ?assert(is_binary(maps:get(link_id, Result))).
+
+%% Phase 1 (PLAN_MESH_TRUTHS_AND_PROVENANCE.md): a caller supplied via
+%% learn/2 becomes its own graph entity, asserted-linked to both the
+%% subject and object it just told the graph about, at confidence 1.0.
+learn_link_records_caller_provenance(_Config) ->
+    mock_store_entity_exists(0),
+    Published = mock_facts_collect_publish(),
+    Caller = <<1, 2, 3, 4>>,
+    CallerHex = binary:encode_hex(Caller, lowercase),
+
+    {ok, _} = learn_link:learn(#{
+        subject => <<"did:macula:alice">>,
+        predicate => <<"knows">>,
+        object => <<"did:macula:bob">>
+    }, Caller),
+
+    verify_entity_checked(CallerHex),
+
+    Calls = store_run_calls(),
+    AssertedCalls = [P || {_Q, P} <- Calls,
+                          maps:get(<<"predicate">>, P, undefined) =:= <<"asserted">>],
+    ?assertEqual(2, length(AssertedCalls)),
+    ?assert(lists:any(fun(P) ->
+        maps:get(<<"subject">>, P) =:= CallerHex andalso
+        maps:get(<<"object">>, P) =:= <<"did:macula:alice">>
+    end, AssertedCalls)),
+    ?assert(lists:any(fun(P) ->
+        maps:get(<<"subject">>, P) =:= CallerHex andalso
+        maps:get(<<"object">>, P) =:= <<"did:macula:bob">>
+    end, AssertedCalls)),
+    ?assert(lists:all(fun(P) -> maps:get(<<"confidence">>, P) =:= 1.0 end, AssertedCalls)),
+
+    timer:sleep(50),
+    AssertedFacts = [F || F <- collect_facts(Published, link_learned),
+                          maps:get(predicate, F) =:= <<"asserted">>],
+    ?assertEqual(2, length(AssertedFacts)).
+
+%% learn/1 (no caller -- the RPC path pre-macula-10.15.0, or any other
+%% caller of the API) must not record any provenance: no third entity,
+%% no asserted links. Regression guard for the opt-in gate.
+learn_link_no_provenance_without_caller(_Config) ->
+    mock_store_entity_exists(0),
+    mock_facts_no_publish(),
+
+    {ok, Result} = learn_link:learn(#{
+        subject => <<"did:macula:alice">>,
+        predicate => <<"knows">>,
+        object => <<"did:macula:bob">>
+    }),
+
+    ?assertEqual(2, maps:get(entities_new, Result)),
+    Calls = store_run_calls(),
+    ?assertEqual([], [P || {_Q, P} <- Calls,
+                           maps:get(<<"predicate">>, P, undefined) =:= <<"asserted">>]).
 
 %%====================================================================
 %% resolve_link tests
