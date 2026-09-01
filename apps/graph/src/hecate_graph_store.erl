@@ -39,12 +39,18 @@
 %% an unrelated, never-populated base relation -- it is not how CozoDB
 %% indexes anything). `entities' needs none: `id' is already its primary
 %% key, so a point lookup by id is already O(1) via the key itself.
-%% A binary literal, not a plain string -- the NIF decodes its script
+%% Binary literals, not plain strings -- the NIF decodes its script
 %% argument as a Rust String, which rustler only accepts from an Erlang
 %% BINARY. A charlist here would hit the exact same badarg the data_dir
 %% path argument did (see init/1's own note) the moment schema init runs,
 %% right after a successful open/1.
--define(SCHEMA, <<"
+%%
+%% THREE separate scripts, not one: CozoDB's own rule is that a `::`
+%% system op "must appear alone in a script" -- confirmed live, the
+%% combined single-script version (relations + both ::index create
+%% lines) failed to parse at all, "unexpected input" right at the first
+%% `::index create` line, on the very first real boot with a working NIF.
+-define(SCHEMA_RELATIONS, <<"
     :create entities {
         id: String
         =>
@@ -63,10 +69,10 @@
         source: String,
         learned_at: Int
     }
-
-    ::index create links:idx_links_subject {subject}
-    ::index create links:idx_links_object {object}
 ">>).
+
+-define(INDEX_LINKS_SUBJECT, <<"::index create links:idx_links_subject {subject}">>).
+-define(INDEX_LINKS_OBJECT, <<"::index create links:idx_links_object {object}">>).
 
 -record(state, {
     resource :: reference() | undefined,
@@ -159,10 +165,24 @@ terminate(_Reason, _State) ->
 %%====================================================================
 
 init_schema(Resource) ->
-    case hecate_graph_nif:run_script(Resource, ?SCHEMA) of
+    case run_schema_step(Resource, ?SCHEMA_RELATIONS) of
+        ok -> init_index_subject(Resource);
+        {error, _} = Error -> Error
+    end.
+
+init_index_subject(Resource) ->
+    case run_schema_step(Resource, ?INDEX_LINKS_SUBJECT) of
+        ok -> init_index_object(Resource);
+        {error, _} = Error -> Error
+    end.
+
+init_index_object(Resource) ->
+    run_schema_step(Resource, ?INDEX_LINKS_OBJECT).
+
+run_schema_step(Resource, Script) ->
+    case hecate_graph_nif:run_script(Resource, Script) of
         {ok, _} -> ok;
-        {error, Reason} ->
-            handle_schema_error(Reason)
+        {error, Reason} -> handle_schema_error(Reason)
     end.
 
 handle_schema_error(Reason) ->
