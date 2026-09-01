@@ -18,7 +18,17 @@ NIF_DIR="${BUILD_DIR:-.}/native/hecate_graph_nif"
 # a location the .so was never copied into -- {error, nif_not_loaded}, a
 # fatal error hecate_graph_store treats as fatal by design, crash-looping
 # on msi00 after what looked like a clean deploy.
-PRIV_DIR="${BUILD_DIR:-.}/apps/graph/priv"
+# Resolved to an ABSOLUTE path NOW, before this script `cd`s into
+# $NIF_DIR below to run cargo -- the real bug behind the priv/-location
+# fix above: PRIV_DIR was a RELATIVE path ("./apps/graph/priv", inherited
+# from the repo-root-priv/ version before it), and by the time it was
+# used for mkdir/cp, cwd had already changed to $NIF_DIR. It landed at
+# native/hecate_graph_nif/apps/graph/priv/ -- a nonsense nested path that
+# still "existed" and made this script's own success echo look right,
+# while relx's overlay (looking at the real, absolute, intended path)
+# correctly reported enoent building the actual release. Confirmed via
+# that overlay's own error message, which is what surfaced this.
+PRIV_DIR="$(cd "${BUILD_DIR:-.}" && pwd)/apps/graph/priv"
 
 if ! command -v cargo >/dev/null 2>&1; then
     echo "[hecate-graph] Rust toolchain not found — CozoDB NIF will not be built." >&2
