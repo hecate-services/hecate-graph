@@ -194,11 +194,28 @@ run_schema_step(Resource, Script) ->
 %% on a schema step that should have been a silent no-op. Checking for
 %% both substrings since index-creation conflicts weren't observed
 %% directly and may word it differently.
+%%
+%% A SECOND, independent bug in the original version of this fix: cozo's
+%% error messages (rendered via miette) carry ANSI colour escape codes,
+%% so `Reason' is a binary that STARTS with byte 27 (ESC). Erlang's `~p'
+%% formatter treats that as "not printable" and renders the whole binary
+%% as a comma-separated list of decimal byte values instead of the
+%% actual text -- confirmed live: the crash log itself showed
+%% `<<27,91,51,49,109,...>>', not the readable message. Substring
+%% matching THAT against "conflicts with an existing" can never succeed,
+%% no matter how correct the substring itself is. `learn_link:
+%% reason_to_binary/1' already had the right guard (use a binary Reason
+%% directly, skip `io_lib:format' entirely); this module didn't, and
+%% that inconsistency -- not the substring text -- was the actual live
+%% bug.
 handle_schema_error(Reason) ->
-    ReasonStr = iolist_to_binary(io_lib:format("~p", [Reason])),
+    ReasonStr = reason_to_binary(Reason),
     AlreadyExists = binary:match(ReasonStr, <<"already exist">>) =/= nomatch,
     Conflicts = binary:match(ReasonStr, <<"conflicts with an existing">>) =/= nomatch,
     case AlreadyExists orelse Conflicts of
         false -> {error, Reason};
         true -> ok
     end.
+
+reason_to_binary(Reason) when is_binary(Reason) -> Reason;
+reason_to_binary(Reason) -> iolist_to_binary(io_lib:format("~p", [Reason])).
