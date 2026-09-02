@@ -46,6 +46,11 @@
     learn_link_handles_real_wire_shaped_values/1,
     learn_link_records_caller_provenance/1,
     learn_link_no_provenance_without_caller/1,
+    learn_link_asserted_by_used_when_no_wire_caller/1,
+    learn_link_asserted_by_takes_precedence_over_a_real_wire_caller_when_valid/1,
+    learn_link_invalid_asserted_by_signature_with_no_wire_caller_records_nothing/1,
+    learn_link_invalid_asserted_by_falls_back_to_a_real_wire_caller/1,
+    learn_link_asserted_by_bound_to_a_different_procedure_is_rejected/1,
     %% resolve_link
     resolve_link_direct_out/1,
     resolve_link_direct_out_with_predicate/1,
@@ -101,6 +106,11 @@ all() ->
      learn_link_handles_real_wire_shaped_values,
      learn_link_records_caller_provenance,
      learn_link_no_provenance_without_caller,
+     learn_link_asserted_by_used_when_no_wire_caller,
+     learn_link_asserted_by_takes_precedence_over_a_real_wire_caller_when_valid,
+     learn_link_invalid_asserted_by_signature_with_no_wire_caller_records_nothing,
+     learn_link_invalid_asserted_by_falls_back_to_a_real_wire_caller,
+     learn_link_asserted_by_bound_to_a_different_procedure_is_rejected,
      resolve_link_direct_out,
      resolve_link_direct_out_with_predicate,
      resolve_link_direct_in,
@@ -368,6 +378,154 @@ learn_link_no_provenance_without_caller(_Config) ->
     Calls = store_run_calls(),
     ?assertEqual([], [P || {_Q, P} <- Calls,
                            maps:get(<<"predicate">>, P, undefined) =:= <<"asserted">>]).
+
+%% Phase 1.5 (mind-grained provenance): an `asserted_by' field lets a
+%% caller relaying this call on someone else's behalf over a SHARED
+%% connection (no wire-level caller of its own) supply a
+%% cryptographically verified identity instead. handle_request/2 is the
+%% seam under test, not learn/2 directly, since effective_caller/2
+%% lives there.
+learn_link_asserted_by_used_when_no_wire_caller(_Config) ->
+    mock_store_entity_exists(0),
+    Published = mock_facts_collect_publish(),
+    KeyPair = macula_identity:generate(),
+    Identity = macula_identity:public(KeyPair),
+    IdentityHex = binary:encode_hex(Identity, lowercase),
+
+    Payload = #{
+        subject => <<"did:macula:alice">>,
+        predicate => <<"knows">>,
+        object => <<"did:macula:bob">>,
+        asserted_by => asserted_by_claim(KeyPair, Identity)
+    },
+    {reply, _Result, _State} = learn_link:handle_request(Payload, undefined),
+
+    verify_entity_checked(IdentityHex),
+    Calls = store_run_calls(),
+    AssertedCalls = [P || {_Q, P} <- Calls,
+                          maps:get(<<"predicate">>, P, undefined) =:= <<"asserted">>],
+    ?assertEqual(2, length(AssertedCalls)),
+    ?assert(lists:all(fun(P) -> maps:get(<<"subject">>, P) =:= IdentityHex end, AssertedCalls)),
+
+    timer:sleep(50),
+    AssertedFacts = [F || F <- collect_facts(Published, link_learned),
+                          maps:get(predicate, F) =:= <<"asserted">>],
+    ?assertEqual(2, length(AssertedFacts)).
+
+%% A VALID asserted_by wins over a real wire caller, not the other way
+%% round -- the wire caller for a relayed call is always the relay's own
+%% identity (spartan's, for every mind it relays), so this is the whole
+%% point of the mechanism: a mind's own asserted identity must show up
+%% in provenance instead of spartan's.
+learn_link_asserted_by_takes_precedence_over_a_real_wire_caller_when_valid(_Config) ->
+    mock_store_entity_exists(0),
+    mock_facts_no_publish(),
+    WireCaller = <<1, 2, 3, 4>>,
+    WireCallerHex = binary:encode_hex(WireCaller, lowercase),
+    KeyPair = macula_identity:generate(),
+    Identity = macula_identity:public(KeyPair),
+    IdentityHex = binary:encode_hex(Identity, lowercase),
+
+    Payload = #{
+        caller => WireCaller,
+        subject => <<"did:macula:alice">>,
+        predicate => <<"knows">>,
+        object => <<"did:macula:bob">>,
+        asserted_by => asserted_by_claim(KeyPair, Identity)
+    },
+    {reply, _Result, _State} = learn_link:handle_request(Payload, undefined),
+
+    Calls = store_run_calls(),
+    AssertedCalls = [P || {_Q, P} <- Calls,
+                          maps:get(<<"predicate">>, P, undefined) =:= <<"asserted">>],
+    ?assert(lists:all(fun(P) -> maps:get(<<"subject">>, P) =:= IdentityHex end, AssertedCalls)),
+    ?assertNot(lists:any(fun(P) -> maps:get(<<"subject">>, P) =:= WireCallerHex end, AssertedCalls)).
+
+%% A forged signature (wrong key), with NO wire caller present either,
+%% must be rejected, not silently trusted -- no provenance at all, same
+%% as no caller supplied.
+learn_link_invalid_asserted_by_signature_with_no_wire_caller_records_nothing(_Config) ->
+    mock_store_entity_exists(0),
+    mock_facts_no_publish(),
+    Impostor = macula_identity:generate(),
+    Owner = macula_identity:generate(),
+    Identity = macula_identity:public(Owner),
+
+    Payload = #{
+        subject => <<"did:macula:alice">>,
+        predicate => <<"knows">>,
+        object => <<"did:macula:bob">>,
+        asserted_by => asserted_by_claim(Impostor, Identity)
+    },
+    {reply, _Result, _State} = learn_link:handle_request(Payload, undefined),
+
+    Calls = store_run_calls(),
+    ?assertEqual([], [P || {_Q, P} <- Calls,
+                           maps:get(<<"predicate">>, P, undefined) =:= <<"asserted">>]).
+
+%% The impersonation case that actually matters: a forged claim can't
+%% borrow a REAL wire caller's identity either -- it must fall back to
+%% the wire caller (spartan's own identity), never silently drop
+%% provenance the wire caller alone would have earned.
+learn_link_invalid_asserted_by_falls_back_to_a_real_wire_caller(_Config) ->
+    mock_store_entity_exists(0),
+    mock_facts_no_publish(),
+    WireCaller = <<5, 6, 7, 8>>,
+    WireCallerHex = binary:encode_hex(WireCaller, lowercase),
+    Impostor = macula_identity:generate(),
+    Owner = macula_identity:generate(),
+    Identity = macula_identity:public(Owner),
+
+    Payload = #{
+        caller => WireCaller,
+        subject => <<"did:macula:alice">>,
+        predicate => <<"knows">>,
+        object => <<"did:macula:bob">>,
+        asserted_by => asserted_by_claim(Impostor, Identity)
+    },
+    {reply, _Result, _State} = learn_link:handle_request(Payload, undefined),
+
+    Calls = store_run_calls(),
+    AssertedCalls = [P || {_Q, P} <- Calls,
+                          maps:get(<<"predicate">>, P, undefined) =:= <<"asserted">>],
+    ?assertEqual(2, length(AssertedCalls)),
+    ?assert(lists:all(fun(P) -> maps:get(<<"subject">>, P) =:= WireCallerHex end, AssertedCalls)).
+
+%% A proof minted for a different procedure must not verify here --
+%% procedure-binding is the whole point of including it in the signed
+%% message.
+learn_link_asserted_by_bound_to_a_different_procedure_is_rejected(_Config) ->
+    mock_store_entity_exists(0),
+    mock_facts_no_publish(),
+    KeyPair = macula_identity:generate(),
+    Identity = macula_identity:public(KeyPair),
+    Ts = erlang:system_time(millisecond),
+    WrongProcSig = macula_identity:sign(
+        hecate_om_ownership_proof:message(Identity, Ts, <<"some.other_procedure">>), KeyPair),
+
+    Payload = #{
+        subject => <<"did:macula:alice">>,
+        predicate => <<"knows">>,
+        object => <<"did:macula:bob">>,
+        asserted_by => #{
+            identity => binary:encode_hex(Identity, lowercase),
+            proof => #{timestamp => Ts, signature => binary:encode_hex(WrongProcSig, lowercase)}
+        }
+    },
+    {reply, _Result, _State} = learn_link:handle_request(Payload, undefined),
+
+    Calls = store_run_calls(),
+    ?assertEqual([], [P || {_Q, P} <- Calls,
+                           maps:get(<<"predicate">>, P, undefined) =:= <<"asserted">>]).
+
+asserted_by_claim(KeyPair, Identity) ->
+    Ts = erlang:system_time(millisecond),
+    Sig = macula_identity:sign(
+        hecate_om_ownership_proof:message(Identity, Ts, <<"hecate_graph.learn_link">>), KeyPair),
+    #{
+        identity => binary:encode_hex(Identity, lowercase),
+        proof => #{timestamp => Ts, signature => binary:encode_hex(Sig, lowercase)}
+    }.
 
 %%====================================================================
 %% resolve_link tests

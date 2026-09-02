@@ -46,6 +46,7 @@
 %% itself -- we are not uncertain that the caller made this call.
 -define(PROVENANCE_CONFIDENCE, 1.0).
 -define(ASSERTED, <<"asserted">>).
+-define(PROCEDURE, <<"hecate_graph.learn_link">>).
 
 %%====================================================================
 %% macula_response
@@ -54,11 +55,59 @@
 init(_Args) -> {ok, undefined}.
 
 handle_request(Payload, State) ->
-    Caller = hecate_om_wire:caller(Payload),
+    Caller = effective_caller(hecate_om_wire:caller(Payload), Payload),
     case learn(Payload, Caller) of
         {ok, Result} -> {reply, Result, State};
         {error, Reason} -> {error, Reason, State}
     end.
+
+%% Phase 1.5 (mind-grained provenance, PLAN_MESH_TRUTHS_AND_PROVENANCE.md):
+%% `hecate_om_wire:caller/1' is the WIRE-level identity -- whoever's
+%% connection this RPC physically arrived on. A caller relaying the
+%% call on behalf of someone else over a SHARED connection (hecate-
+%% spartan making this call for one of its minds, all sharing spartan's
+%% own mesh pool) can supply an `asserted_by' field instead: its own
+%% Ed25519 identity plus a signature proving it, verified via
+%% `hecate_om_ownership_proof' (requires hecate_om >= 0.23.0) the exact
+%% same way hecate-citizens verifies a register_presence caller --
+%% `{identity, timestamp, procedure}', procedure-bound so a proof minted
+%% here can't be replayed against a different gated capability.
+%%
+%% A VALID `asserted_by' wins over the wire caller, not the other way
+%% round -- the wire caller for a relayed call is always the relay's own
+%% identity (spartan's, for every mind it relays on behalf of), so
+%% "wire caller wins when present" would make asserted_by never actually
+%% take effect for the one case it exists for. This is safe precisely
+%% because forging a claim requires a valid signature for the claimed
+%% identity: `hecate_om_ownership_proof:verify/3' rejects anything else,
+%% so an absent or INVALID `asserted_by' falls back to the wire caller
+%% (or to no caller at all) -- it can never impersonate a different
+%% identity than the one whose key actually signed it. Both paths carry
+%% the SAME confidence: a valid Ed25519 signature is equally
+%% cryptographic proof of possession regardless of which of the two
+%% mechanisms checked it.
+effective_caller(WireCaller, Payload) ->
+    asserted_or_wire(hecate_om_wire:field(asserted_by, Payload), WireCaller).
+
+asserted_or_wire(AssertedBy, WireCaller) when is_map(AssertedBy) ->
+    verified_or_wire(verify_asserted(AssertedBy), WireCaller);
+asserted_or_wire(_Absent, WireCaller) ->
+    WireCaller.
+
+verified_or_wire({ok, Identity}, _WireCaller) -> Identity;
+verified_or_wire({error, _Reason}, WireCaller) -> WireCaller.
+
+verify_asserted(AssertedBy) ->
+    verify_identity(hecate_om_ownership_proof:decode_identity(hecate_om_wire:field(identity, AssertedBy)),
+                    hecate_om_wire:field(proof, AssertedBy, #{})).
+
+verify_identity(undefined, _Proof) ->
+    {error, invalid_identity};
+verify_identity(Identity, Proof) ->
+    verified(hecate_om_ownership_proof:verify(Identity, Proof, ?PROCEDURE), Identity).
+
+verified(ok, Identity) -> {ok, Identity};
+verified({error, _} = Error, _Identity) -> Error.
 
 %%====================================================================
 %% API

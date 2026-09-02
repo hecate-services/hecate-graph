@@ -2,6 +2,40 @@
 
 All notable changes to hecate-graph will be documented in this file.
 
+## [0.5.0] - 2026-09-02
+
+### Added
+
+- Phase 1.5 (PLAN_MESH_TRUTHS_AND_PROVENANCE.md): `learn_link` provenance
+  is now mind-grained, not only connection-grained. `hecate_om_wire:
+  caller/1` is the wire-level identity -- whoever's physical connection
+  the RPC arrived on -- which for a caller relaying the call on someone
+  else's behalf over a shared connection (hecate-spartan, for every mind
+  it relays) is always the relay's own identity, never the individual
+  mind's. An optional `asserted_by` field (`{identity, proof}`) lets the
+  caller supply a different, cryptographically verified identity
+  instead, via `hecate_om_ownership_proof:verify/3` (requires hecate_om
+  >= 0.23.0) -- the same challenge-response mechanism hecate-citizens
+  already uses for `register_presence`, procedure-bound
+  (`hecate_graph.learn_link`) so a proof can't be replayed against a
+  different gated capability. A VALID `asserted_by` takes precedence
+  over the wire caller (the whole point -- a relay's wire identity would
+  otherwise always win, and the mechanism would never actually fire for
+  the case it exists for); an absent or invalid one falls back to the
+  wire caller, never silently drops provenance the wire caller alone
+  would have earned, and can never impersonate an identity it doesn't
+  hold the key for. Both paths record at the same confidence -- a valid
+  signature is equally proof of possession either way.
+- Bumped `hecate_om` `~> 0.22` -> `~> 0.23` for
+  `hecate_om_ownership_proof`.
+- 6 new tests (48 total): the no-wire-caller case, precedence over a
+  real wire caller when valid, an invalid claim degrading to no
+  provenance and to a real wire caller correctly, and procedure-binding
+  rejection. One of these caught a real design mistake in an earlier
+  draft (a test asserting the wire caller should win over a valid
+  asserted_by, which would have made the whole mechanism inert for its
+  actual use case) before it shipped.
+
 ## [0.4.1] - 2026-09-02
 
 ### Changed

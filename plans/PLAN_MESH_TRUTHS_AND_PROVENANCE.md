@@ -88,6 +88,43 @@ universal (at minimum `macula-rust` and `macula-go` are real, in-use SDKs
 today, not Erlang-only theory — see `macula-apps/macula-passport` and
 `macula-apps/macula-cam2me`).
 
+## Phase 1.5 — Mind-Grained Provenance for a Relayed Caller
+
+Phase 1's `caller` is wire-level: whoever's physical connection the RPC
+arrived on. That's exactly right for a direct caller (hecate-mail dialing
+in with its own service identity), and exactly wrong for a caller relaying
+the call on someone else's behalf over ONE shared connection — every mind
+`hecate-spartan` relays for shares spartan's own service identity at the
+wire level, so Phase 1 alone can never distinguish which mind actually
+taught the graph something; every write is attributed to "hecate-spartan."
+
+- `learn_link` accepts an optional `asserted_by` field: `#{identity =>
+  <hex pubkey>, proof => #{timestamp, signature}}`, verified via
+  `hecate_om_ownership_proof:verify/3` (hecate_om >= 0.23.0) — the exact
+  challenge-response mechanism hecate-citizens already uses for
+  `register_presence`, extracted to `hecate_om` once hecate-graph became
+  the third independent consumer (see that module's own moduledoc).
+  Procedure-bound (`hecate_graph.learn_link`) so a proof minted here can't
+  be replayed against a different gated capability.
+- A VALID `asserted_by` takes precedence over the wire caller, not the
+  other way round — the whole reason it exists is that the wire caller for
+  a relay is always the relay's own identity, so "wire caller wins when
+  present" would make the mechanism never actually fire for the case it's
+  for. Safe precisely because forging a claim requires a real signature
+  for the claimed identity: an invalid or absent one falls back to the
+  wire caller (or to no caller at all), never impersonates a different
+  identity than the one whose key actually signed it.
+- Both paths record at the SAME confidence (1.0) — a valid Ed25519
+  signature is equally cryptographic proof of possession whether the
+  connecting station checked it or this module did.
+- `hecate-spartan`'s `graph_learn` mind tool is the first (and, as of this
+  writing, only) real caller of this — see its own
+  `plans/PLAN_HECATE_SPARTAN.md`.
+- Not extended to Phase 2's `truth_asserted` pub/sub path: a mind
+  publishing truths directly (rather than calling `learn_link`) isn't
+  built anywhere yet, so there's no real caller to design against. Same
+  mechanism would apply if that ever exists.
+
 ## Phase 2 — Subscribe to a Well-Known "Truths" Topic
 
 - One canonical wire contract for a shared topic (name TBD, candidate:
@@ -231,6 +268,11 @@ Real open questions before this is buildable, not just "nice future work":
       NVIDIA free tier is the actual default (cost-driven; Melious
       priced out at this stage but stays wired into hecate-llm's own
       provider list). hecate-graph 0.4.0.
+- [x] **Phase 1.5** — Mind-grained provenance for a relayed caller via
+      `asserted_by` + `hecate_om_ownership_proof`. DONE 2026-09-02:
+      hecate_om 0.23.0 (new module, extracted from hecate-citizens/
+      hecate-mail's own duplicated verifiers), hecate-graph 0.5.0. First
+      real consumer: hecate-spartan's `graph_learn` mind tool.
 - [ ] **Phase 4** — Citizen lookup via delegation-facts traversal (depends
       on the citizen-identity plan)
 - [ ] **Phase 5** — Reputation via CozoDB's built-in PageRank (exploratory;
