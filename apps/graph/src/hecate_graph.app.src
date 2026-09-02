@@ -27,7 +27,7 @@
         {narrator_backend, narrate_hecate_llm},
         %% Default model for narrate_hecate_llm -- see that module's own
         %% comment for why this specific one.
-        {narrator_model, <<"deepseek-v4-pro">>}
+        {narrator_model, <<"moonshotai/kimi-k3">>}
     ]},
     {modules, []},
     {licenses, ["Apache-2.0"]},

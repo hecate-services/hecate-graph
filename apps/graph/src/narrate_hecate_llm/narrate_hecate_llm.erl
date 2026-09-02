@@ -34,7 +34,8 @@ narrate(Subgraph, Opts) ->
 %% A caller-supplied `model' in Opts wins (narrate_entity/narrate_link
 %% both thread hecate_om_wire:field(model, Params) through, so an RPC
 %% caller can ask for a specific model per call); the app-env default
-%% otherwise. "deepseek-v4-pro" is the same model id already confirmed
+%% otherwise (NVIDIA's "moonshotai/kimi-k3" since 2026-09-02; before that
+%% "deepseek-v4-pro", the same model id already confirmed
 %% live against this same DEEPSEEK_API_KEY elsewhere in this workspace
 %% (opencode.json: 200 on /v1/models, a real /v1/chat/completions call) --
 %% not independently re-verified against hecate-llm's own gateway yet,
