@@ -41,7 +41,9 @@ narrate(Subgraph, Opts) ->
 %% unlike NVIDIA's "org/model"-namespaced ids (moonshotai/kimi-k3), which
 %% this replaced as the default.
 model(undefined) ->
-    application:get_env(hecate_graph, narrator_model, <<"deepseek-v4-pro">>);
+    %% NVIDIA's free endpoint is the fleet's LLM backend (2026-09-02); its ids
+    %% are namespaced, and this one is the same model the spartan minds run on.
+    application:get_env(hecate_graph, narrator_model, <<"moonshotai/kimi-k3">>);
 model(Model) when is_binary(Model) ->
     Model.
 
